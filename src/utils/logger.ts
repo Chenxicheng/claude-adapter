@@ -62,7 +62,7 @@ class Logger {
     if (level === LogLevel.INFO && this.level > LogLevel.DEBUG) {
       output = `${color}${message}${RESET}`;
       if (meta && Object.keys(meta).length > 0) {
-        output += `\n${color}${JSON.stringify(meta, null, 2)}${RESET}`;
+        output += ` ${color}${JSON.stringify(meta)}${RESET}`;
       }
     } else {
       // Full format with timestamp for DEBUG or when in debug mode
@@ -70,7 +70,7 @@ class Logger {
       const timestamp = this.formatTimestamp();
       output = `${color}[${timestamp}] [${this.prefix}] ${levelName}${RESET} ${message}`;
       if (meta && Object.keys(meta).length > 0) {
-        output += `\n${color}${JSON.stringify(meta, null, 2)}${RESET}`;
+        output += ` ${JSON.stringify(meta)}`;
       }
     }
 
