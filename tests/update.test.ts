@@ -204,5 +204,65 @@ describe('Update Utilities', () => {
 
             expect(result).toBeNull();
         });
+
+        it('should handle general exceptions and return null', async () => {
+            mockGetCachedLatestVersion.mockImplementation(() => {
+                throw new Error('Unexpected cache error');
+            });
+
+            const result = await checkForUpdates();
+
+            expect(result).toBeNull();
+        });
+
+        it('should return null if https.get throws an error directly', async () => {
+            mockGetCachedLatestVersion.mockReturnValue(null);
+
+            mockHttpsGet.mockImplementation(() => {
+                throw new Error('Sync https.get error');
+            });
+
+            const promise = checkForUpdates();
+            jest.runAllTimers();
+            const result = await promise;
+
+            expect(result).toBeNull();
+        });
+
+        it('should handle updateLatestVersion throwing an error', async () => {
+            mockGetCachedLatestVersion.mockReturnValue(null);
+
+            // Mock successful npm response
+            const mockResponse = {
+                on: jest.fn().mockImplementation((event: string, callback: Function) => {
+                    if (event === 'data') {
+                        callback(JSON.stringify({ version: '3.0.0' }));
+                    }
+                    if (event === 'end') {
+                        callback();
+                    }
+                    return mockResponse;
+                })
+            };
+
+            mockHttpsGet.mockImplementation((_url: string, callback: Function) => {
+                callback(mockResponse);
+                return { on: jest.fn().mockReturnThis() };
+            });
+
+            // Force updateLatestVersion to throw
+            mockUpdateLatestVersion.mockImplementation(() => {
+                throw new Error('Failed to update cache');
+            });
+
+            const promise = checkForUpdates();
+            jest.runAllTimers();
+            const result = await promise;
+
+            // The function wraps everything in a big try/catch, so an error here will return null
+            expect(result).toBeNull();
+            expect(mockHttpsGet).toHaveBeenCalled();
+            expect(mockUpdateLatestVersion).toHaveBeenCalledWith('3.0.0');
+        });
     });
 });
