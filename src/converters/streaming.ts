@@ -52,6 +52,7 @@ interface StreamingState {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  usageReceived: boolean;
   hasStarted: boolean;
   textContent: string;
   textBlockOpen: boolean;
@@ -76,6 +77,7 @@ export async function streamOpenAIToAnthropic(
     inputTokens: 0,
     outputTokens: 0,
     cachedInputTokens: 0,
+    usageReceived: false,
     hasStarted: false,
     textContent: '',
     textBlockOpen: false,
@@ -108,6 +110,7 @@ function processChunk(chunk: OpenAIStreamChunk, state: StreamingState, raw: any)
     state.inputTokens = chunk.usage.prompt_tokens;
     state.outputTokens = chunk.usage.completion_tokens;
     state.cachedInputTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
+    state.usageReceived = true;
   }
 
   // Capture response model from chunk
@@ -308,6 +311,12 @@ function finishStream(state: StreamingState, raw: any): void {
     streaming: true,
   });
 
+  const usage = {
+    output_tokens: state.outputTokens,
+    cache_read_input_tokens: state.cachedInputTokens,
+    ...(state.usageReceived ? { input_tokens: state.inputTokens } : {}),
+  };
+
   // Send message_delta
   const deltaEvent = {
     type: 'message_delta',
@@ -315,10 +324,7 @@ function finishStream(state: StreamingState, raw: any): void {
       stop_reason: stopReason,
       stop_sequence: null,
     },
-    usage: {
-      output_tokens: state.outputTokens,
-      cache_read_input_tokens: state.cachedInputTokens,
-    },
+    usage,
   };
   sendSSE(deltaEvent, raw);
 

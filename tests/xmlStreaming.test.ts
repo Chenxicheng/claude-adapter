@@ -217,5 +217,70 @@ describe('XML Streaming Converter', () => {
             expect(errorEvent!.data.error.message).toBe('Connection lost');
             expect(mockRaw.ended).toBe(true);
         });
+
+        it('should include final usage in message_delta without delaying message_start', async () => {
+            const mockRaw = new MockRawResponse();
+            const mockReply = { raw: mockRaw } as any;
+
+            const stream = createMockStream([
+                { choices: [{ delta: { content: 'Usage check' }, finish_reason: null }] },
+                {
+                    choices: [],
+                    usage: {
+                        prompt_tokens: 20,
+                        completion_tokens: 10,
+                        prompt_tokens_details: { cached_tokens: 8 },
+                    },
+                },
+            ]);
+
+            await streamXmlOpenAIToAnthropic(stream as any, mockReply, 'test-model');
+
+            const events = mockRaw.getEvents();
+            const messageDelta = events.find(e => e.data.type === 'message_delta');
+
+            expect(events[0].data.type).toBe('message_start');
+            expect(messageDelta!.data.usage.input_tokens).toBe(20);
+            expect(messageDelta!.data.usage.output_tokens).toBe(10);
+            expect(messageDelta!.data.usage.cache_read_input_tokens).toBe(8);
+        });
+
+        it('should include input_tokens when upstream reports zero prompt tokens', async () => {
+            const mockRaw = new MockRawResponse();
+            const mockReply = { raw: mockRaw } as any;
+
+            const stream = createMockStream([
+                { choices: [{ delta: { content: 'Zero usage' }, finish_reason: null }] },
+                {
+                    choices: [],
+                    usage: { prompt_tokens: 0, completion_tokens: 3 },
+                },
+            ]);
+
+            await streamXmlOpenAIToAnthropic(stream as any, mockReply, 'test-model');
+
+            const events = mockRaw.getEvents();
+            const messageDelta = events.find(e => e.data.type === 'message_delta');
+
+            expect(messageDelta!.data.usage).toHaveProperty('input_tokens', 0);
+            expect(messageDelta!.data.usage.output_tokens).toBe(3);
+        });
+
+        it('should omit input_tokens from message_delta when upstream usage is missing', async () => {
+            const mockRaw = new MockRawResponse();
+            const mockReply = { raw: mockRaw } as any;
+
+            const stream = createMockStream([
+                { choices: [{ delta: { content: 'No usage' }, finish_reason: null }] },
+                { choices: [{ delta: {}, finish_reason: 'stop' }] },
+            ]);
+
+            await streamXmlOpenAIToAnthropic(stream as any, mockReply, 'test-model');
+
+            const events = mockRaw.getEvents();
+            const messageDelta = events.find(e => e.data.type === 'message_delta');
+
+            expect(messageDelta!.data.usage).not.toHaveProperty('input_tokens');
+        });
     });
 });

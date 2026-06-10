@@ -334,9 +334,47 @@ describe('Streaming Converter', () => {
       const events = mockRaw.getEvents();
       const messageDelta = events.find((e) => e.data.type === 'message_delta');
 
-      // This should fail if the bug exists
+      expect(events[0].data.type).toBe('message_start');
+      expect(messageDelta!.data.usage.input_tokens).toBe(20);
       expect(messageDelta!.data.usage.output_tokens).toBe(10);
-      expect(messageDelta!.data.usage).not.toHaveProperty('input_tokens'); // input_tokens is not in message_delta usage, checking side effect
+    });
+
+    it('should include input_tokens when upstream reports zero prompt tokens', async () => {
+      const mockRaw = new MockRawResponse();
+      const mockReply = { raw: mockRaw } as any;
+
+      const stream = createMockStream([
+        { choices: [{ delta: { content: 'Zero usage' }, finish_reason: null }] },
+        {
+          choices: [],
+          usage: { prompt_tokens: 0, completion_tokens: 3 },
+        },
+      ]);
+
+      await streamOpenAIToAnthropic(stream as any, mockReply, 'claude-4-opus');
+
+      const events = mockRaw.getEvents();
+      const messageDelta = events.find((e) => e.data.type === 'message_delta');
+
+      expect(messageDelta!.data.usage).toHaveProperty('input_tokens', 0);
+      expect(messageDelta!.data.usage.output_tokens).toBe(3);
+    });
+
+    it('should omit input_tokens from message_delta when upstream usage is missing', async () => {
+      const mockRaw = new MockRawResponse();
+      const mockReply = { raw: mockRaw } as any;
+
+      const stream = createMockStream([
+        { choices: [{ delta: { content: 'No usage' }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]);
+
+      await streamOpenAIToAnthropic(stream as any, mockReply, 'claude-4-opus');
+
+      const events = mockRaw.getEvents();
+      const messageDelta = events.find((e) => e.data.type === 'message_delta');
+
+      expect(messageDelta!.data.usage).not.toHaveProperty('input_tokens');
     });
 
     it('should include cached tokens in streaming usage events', async () => {
@@ -360,6 +398,8 @@ describe('Streaming Converter', () => {
       const events = mockRaw.getEvents();
       const messageDelta = events.find((e) => e.data.type === 'message_delta');
 
+      expect(messageDelta!.data.usage.input_tokens).toBe(500);
+      expect(messageDelta!.data.usage.output_tokens).toBe(10);
       expect(messageDelta!.data.usage.cache_read_input_tokens).toBe(400);
     });
 

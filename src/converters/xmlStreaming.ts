@@ -17,6 +17,7 @@ interface BufferedState {
     inputTokens: number;
     outputTokens: number;
     cachedInputTokens: number;
+    usageReceived: boolean;
     hasStarted: boolean;
     buffer: string;  // Accumulates all text
     toolCallsEmitted: number;  // Count of tool calls emitted
@@ -47,6 +48,7 @@ export async function streamXmlOpenAIToAnthropic(
         inputTokens: 0,
         outputTokens: 0,
         cachedInputTokens: 0,
+        usageReceived: false,
         hasStarted: false,
         buffer: '',
         toolCallsEmitted: 0,
@@ -83,6 +85,7 @@ function processChunk(
         state.inputTokens = chunk.usage.prompt_tokens;
         state.outputTokens = chunk.usage.completion_tokens;
         state.cachedInputTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
+        state.usageReceived = true;
     }
 
     // Capture response model
@@ -274,6 +277,12 @@ function finishStream(state: BufferedState, raw: any): void {
         streaming: true
     });
 
+    const usage = {
+        output_tokens: state.outputTokens,
+        cache_read_input_tokens: state.cachedInputTokens,
+        ...(state.usageReceived ? { input_tokens: state.inputTokens } : {}),
+    };
+
     // Send message_delta
     const deltaEvent = {
         type: 'message_delta',
@@ -281,10 +290,7 @@ function finishStream(state: BufferedState, raw: any): void {
             stop_reason: stopReason,
             stop_sequence: null,
         },
-        usage: {
-            output_tokens: state.outputTokens,
-            cache_read_input_tokens: state.cachedInputTokens,
-        },
+        usage,
     };
     sendSSE(deltaEvent, raw);
 

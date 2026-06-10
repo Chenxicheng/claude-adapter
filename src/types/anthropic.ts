@@ -137,7 +137,9 @@ export interface AnthropicMessageDeltaEvent {
         stop_sequence?: string;
     };
     usage: {
+        input_tokens?: number;
         output_tokens: number;
+        cache_read_input_tokens?: number;
     };
 }
 
