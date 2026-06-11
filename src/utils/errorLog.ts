@@ -1,6 +1,6 @@
 // Error logging utility
 import { join } from 'path';
-import { getTodayDateString, ensureDirExists, getBaseDir, appendJsonLine } from './fileStorage';
+import { getTodayDateString, getBaseDir, enqueueJsonLineWrite } from './fileStorage';
 
 export interface ErrorLogRecord {
     timestamp: string;        // ISO 8601
@@ -76,8 +76,6 @@ export function recordError(
             return;
         }
 
-        ensureDirExists(ERROR_DIR);
-
         const record: ErrorLogRecord = {
             timestamp: new Date().toISOString(),
             ...context,
@@ -85,7 +83,7 @@ export function recordError(
         };
 
         const filePath = getErrorFilePath(getTodayDateString());
-        appendJsonLine(filePath, record);
+        enqueueJsonLineWrite(ERROR_DIR, filePath, record);
     } catch {
         // Fail silently - don't interrupt API flow for error logging
     }

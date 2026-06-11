@@ -15,6 +15,7 @@ jest.mock('../src/utils/fileStorage', () => {
 });
 
 import { recordUsage, TokenUsageRecord } from '../src/utils/tokenUsage';
+import { flushJsonLineWrites } from '../src/utils/fileStorage';
 
 function readLastUsageRecord(): TokenUsageRecord {
   const usageDir = join(TEST_DIR, 'token_usage');
@@ -31,7 +32,9 @@ describe('Token Usage Utilities', () => {
     }
   });
 
-  afterAll(() => {
+  afterAll(async () => {
+    await flushJsonLineWrites();
+
     try {
       rmSync(TEST_DIR, { recursive: true, force: true });
     } catch {
@@ -40,7 +43,7 @@ describe('Token Usage Utilities', () => {
   });
 
   describe('recordUsage', () => {
-    it('should record token usage to file', () => {
+    it('should record token usage to file', async () => {
       const usage = {
         provider: 'https://api.openai.com/v1',
         modelName: 'claude-4-opus',
@@ -52,12 +55,13 @@ describe('Token Usage Utilities', () => {
       };
 
       recordUsage(usage);
+      await flushJsonLineWrites();
 
       const usageDir = join(TEST_DIR, 'token_usage');
       expect(existsSync(usageDir)).toBe(true);
     });
 
-    it('should include timestamp in record', () => {
+    it('should include timestamp in record', async () => {
       const usage = {
         provider: 'https://api.example.com',
         modelName: 'test-model',
@@ -68,6 +72,7 @@ describe('Token Usage Utilities', () => {
       };
 
       recordUsage(usage);
+      await flushJsonLineWrites();
 
       const usageDir = join(TEST_DIR, 'token_usage');
       const files = require('fs').readdirSync(usageDir);
@@ -78,7 +83,7 @@ describe('Token Usage Utilities', () => {
       expect(content).toContain('test-model');
     });
 
-    it('should handle optional cached tokens', () => {
+    it('should handle optional cached tokens', async () => {
       const usage = {
         provider: 'https://api.example.com',
         modelName: 'cached-model',
@@ -90,6 +95,7 @@ describe('Token Usage Utilities', () => {
       };
 
       recordUsage(usage);
+      await flushJsonLineWrites();
 
       const usageDir = join(TEST_DIR, 'token_usage');
       const files = require('fs').readdirSync(usageDir);
@@ -99,7 +105,7 @@ describe('Token Usage Utilities', () => {
       expect(content).toContain('50');
     });
 
-    it('should handle optional model field', () => {
+    it('should handle optional model field', async () => {
       const usage = {
         provider: 'https://api.example.com',
         modelName: 'requested-model',
@@ -111,6 +117,7 @@ describe('Token Usage Utilities', () => {
       };
 
       recordUsage(usage);
+      await flushJsonLineWrites();
 
       const usageDir = join(TEST_DIR, 'token_usage');
       const files = require('fs').readdirSync(usageDir);
@@ -119,7 +126,7 @@ describe('Token Usage Utilities', () => {
       expect(content).toContain('actual-model-id');
     });
 
-    it('should append multiple records', () => {
+    it('should append multiple records', async () => {
       // Clear previous records by using unique identifiers
       const usage1 = {
         provider: 'provider-1',
@@ -140,6 +147,7 @@ describe('Token Usage Utilities', () => {
 
       recordUsage(usage1);
       recordUsage(usage2);
+      await flushJsonLineWrites();
 
       const usageDir = join(TEST_DIR, 'token_usage');
       const files = require('fs').readdirSync(usageDir);
@@ -149,7 +157,35 @@ describe('Token Usage Utilities', () => {
       expect(content).toContain('model-2');
     });
 
-    it('should persist usage status for complete records', () => {
+    it('should write queued records as valid JSON lines', async () => {
+      const modelNames = ['queued-model-1', 'queued-model-2', 'queued-model-3'];
+
+      for (const modelName of modelNames) {
+        recordUsage({
+          provider: 'queued-provider',
+          modelName,
+          inputTokens: 1,
+          outputTokens: 1,
+          streaming: false,
+          usageStatus: 'complete',
+        });
+      }
+
+      await flushJsonLineWrites();
+
+      const usageDir = join(TEST_DIR, 'token_usage');
+      const files = require('fs').readdirSync(usageDir);
+      const content = readFileSync(join(usageDir, files[0]), 'utf-8');
+      const queuedRecords = content
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as TokenUsageRecord)
+        .filter((record) => modelNames.includes(record.modelName));
+
+      expect(queuedRecords.map((record) => record.modelName)).toEqual(modelNames);
+    });
+
+    it('should persist usage status for complete records', async () => {
       recordUsage({
         provider: 'https://api.example.com',
         modelName: 'complete-model',
@@ -159,6 +195,7 @@ describe('Token Usage Utilities', () => {
         usageStatus: 'complete',
       });
 
+      await flushJsonLineWrites();
       const record = readLastUsageRecord();
 
       expect(record.usageStatus).toBe('complete');
@@ -166,7 +203,7 @@ describe('Token Usage Utilities', () => {
       expect(record.outputTokens).toBe(4);
     });
 
-    it('should allow missing final chunk records without token counts', () => {
+    it('should allow missing final chunk records without token counts', async () => {
       recordUsage({
         provider: 'https://api.example.com',
         modelName: 'missing-model',
@@ -174,6 +211,7 @@ describe('Token Usage Utilities', () => {
         usageStatus: 'missing_final_chunk',
       });
 
+      await flushJsonLineWrites();
       const record = readLastUsageRecord();
 
       expect(record.usageStatus).toBe('missing_final_chunk');

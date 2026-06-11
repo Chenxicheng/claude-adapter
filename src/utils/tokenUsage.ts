@@ -1,6 +1,6 @@
 // Token usage storage utility
 import { join } from 'path';
-import { getTodayDateString, ensureDirExists, getBaseDir, appendJsonLine } from './fileStorage';
+import { getTodayDateString, getBaseDir, enqueueJsonLineWrite } from './fileStorage';
 
 export interface TokenUsageRecord {
   timestamp: string; // ISO 8601
@@ -29,15 +29,13 @@ function getUsageFilePath(dateStr: string): string {
  */
 export function recordUsage(data: Omit<TokenUsageRecord, 'timestamp'>): void {
   try {
-    ensureDirExists(USAGE_DIR);
-
     const record: TokenUsageRecord = {
       timestamp: new Date().toISOString(),
       ...data,
     };
 
     const filePath = getUsageFilePath(getTodayDateString());
-    appendJsonLine(filePath, record);
+    enqueueJsonLineWrite(USAGE_DIR, filePath, record);
   } catch {
     // Fail silently - don't interrupt API flow for usage tracking
   }

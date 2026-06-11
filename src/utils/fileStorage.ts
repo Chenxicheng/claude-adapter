@@ -1,10 +1,12 @@
 // Shared file storage utilities for daily JSON files
 import { existsSync, mkdirSync, appendFileSync } from 'fs';
+import { mkdir, appendFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
 
 // Base directory for all claude-adapter data
 const BASE_DIR = join(homedir(), '.claude-adapter');
+let jsonLineWriteQueue = Promise.resolve();
 
 /**
  * Get today's date as YYYY-MM-DD
@@ -36,4 +38,27 @@ export function getBaseDir(): string {
 export function appendJsonLine(filePath: string, record: object): void {
     const line = JSON.stringify(record) + '\n';
     appendFileSync(filePath, line, 'utf-8');
+}
+
+/**
+ * Queue a JSONL write so request handling is not blocked by filesystem I/O.
+ */
+export function enqueueJsonLineWrite(dirPath: string, filePath: string, record: object): void {
+    const line = JSON.stringify(record) + '\n';
+
+    jsonLineWriteQueue = jsonLineWriteQueue
+        .then(async () => {
+            await mkdir(dirPath, { recursive: true });
+            await appendFile(filePath, line, 'utf-8');
+        })
+        .catch(() => {
+            // Fail silently - JSONL records are observability data, not request-critical state
+        });
+}
+
+/**
+ * Wait for queued JSONL writes. Intended for tests and graceful verification.
+ */
+export function flushJsonLineWrites(): Promise<void> {
+    return jsonLineWriteQueue;
 }

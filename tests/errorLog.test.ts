@@ -14,7 +14,8 @@ jest.mock('../src/utils/fileStorage', () => {
   };
 });
 
-import { recordError } from '../src/utils/errorLog';
+import { recordError, ErrorLogRecord } from '../src/utils/errorLog';
+import { flushJsonLineWrites } from '../src/utils/fileStorage';
 
 describe('Error Log Utilities', () => {
   beforeAll(() => {
@@ -23,7 +24,9 @@ describe('Error Log Utilities', () => {
     }
   });
 
-  afterAll(() => {
+  afterAll(async () => {
+    await flushJsonLineWrites();
+
     try {
       rmSync(TEST_DIR, { recursive: true, force: true });
     } catch {
@@ -32,7 +35,7 @@ describe('Error Log Utilities', () => {
   });
 
   describe('recordError', () => {
-    it('should not record 401 errors', () => {
+    it('should not record 401 errors', async () => {
       const error = Object.assign(new Error('Unauthorized'), { status: 401 });
       const context = {
         requestId: 'test-req-1',
@@ -42,6 +45,7 @@ describe('Error Log Utilities', () => {
       };
 
       recordError(error, context);
+      await flushJsonLineWrites();
 
       // Check that no file was created or error was skipped
       const errorDir = join(TEST_DIR, 'error_logs');
@@ -54,7 +58,7 @@ describe('Error Log Utilities', () => {
       }
     });
 
-    it('should not record 404 errors', () => {
+    it('should not record 404 errors', async () => {
       const error = Object.assign(new Error('Not Found'), { status: 404 });
       const context = {
         requestId: 'test-req-404',
@@ -64,10 +68,11 @@ describe('Error Log Utilities', () => {
       };
 
       recordError(error, context);
+      await flushJsonLineWrites();
       // 404 should be skipped
     });
 
-    it('should not record 429 errors', () => {
+    it('should not record 429 errors', async () => {
       const error = Object.assign(new Error('Rate limited'), { status: 429 });
       const context = {
         requestId: 'test-req-429',
@@ -77,10 +82,11 @@ describe('Error Log Utilities', () => {
       };
 
       recordError(error, context);
+      await flushJsonLineWrites();
       // 429 should be skipped
     });
 
-    it('should not record 402 errors', () => {
+    it('should not record 402 errors', async () => {
       const error = Object.assign(new Error('Payment Required'), { status: 402 });
       const context = {
         requestId: 'test-req-402',
@@ -90,10 +96,11 @@ describe('Error Log Utilities', () => {
       };
 
       recordError(error, context);
+      await flushJsonLineWrites();
       // 402 should be skipped
     });
 
-    it('should record 500 errors', () => {
+    it('should record 500 errors', async () => {
       const error = Object.assign(new Error('Internal Server Error'), {
         status: 500,
         code: 'server_error',
@@ -107,12 +114,42 @@ describe('Error Log Utilities', () => {
       };
 
       recordError(error, context);
+      await flushJsonLineWrites();
 
       const errorDir = join(TEST_DIR, 'error_logs');
       expect(existsSync(errorDir)).toBe(true);
     });
 
-    it('should extract error details correctly', () => {
+    it('should write queued errors as valid JSON lines', async () => {
+      const requestIds = ['queued-req-1', 'queued-req-2', 'queued-req-3'];
+
+      for (const requestId of requestIds) {
+        const error = Object.assign(new Error(`Queued error ${requestId}`), {
+          status: 500,
+        });
+        recordError(error, {
+          requestId,
+          provider: 'https://api.example.com',
+          modelName: 'gpt-4',
+          streaming: false,
+        });
+      }
+
+      await flushJsonLineWrites();
+
+      const errorDir = join(TEST_DIR, 'error_logs');
+      const files = require('fs').readdirSync(errorDir);
+      const content = readFileSync(join(errorDir, files[0]), 'utf-8');
+      const queuedRecords = content
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as ErrorLogRecord)
+        .filter((record) => requestIds.includes(record.requestId));
+
+      expect(queuedRecords.map((record) => record.requestId)).toEqual(requestIds);
+    });
+
+    it('should extract error details correctly', async () => {
       const error = Object.assign(new Error('Test error'), {
         status: 503,
         code: 'service_unavailable',
@@ -127,6 +164,7 @@ describe('Error Log Utilities', () => {
       };
 
       recordError(error, context);
+      await flushJsonLineWrites();
 
       const errorDir = join(TEST_DIR, 'error_logs');
       const files = require('fs').readdirSync(errorDir);
