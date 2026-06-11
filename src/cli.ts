@@ -13,6 +13,7 @@ import { createServer, findAvailablePort } from './server';
 import { UI } from './utils/ui';
 import { checkForUpdates } from './utils/update';
 import { getMetadata } from './utils/metadata';
+import { parseUpstreamHeadersInput } from './utils/upstreamHeaders';
 import { version } from '../package.json';
 
 const program = new Command();
@@ -239,6 +240,24 @@ async function promptForConfiguration(): Promise<AdapterConfig> {
         toolFormat = 'xml';
     }
 
+    const upstreamHeadersAnswer = await inquirer.prompt([{
+        type: 'input',
+        name: 'upstreamHeaders',
+        prefix,
+        message: 'Upstream OpenAI headers JSON (optional):',
+        transformer: (input: string) => input ? UI.highlight(input) : '',
+        validate: (input: string) => {
+            try {
+                parseUpstreamHeadersInput(input);
+                return true;
+            } catch (error) {
+                return (error as Error).message;
+            }
+        },
+    }]);
+
+    const upstreamHeaders = parseUpstreamHeadersInput(upstreamHeadersAnswer.upstreamHeaders);
+
     return {
         baseUrl: requiredAnswers.baseUrl.trim(),
         apiKey: requiredAnswers.apiKey.trim(),
@@ -248,6 +267,7 @@ async function promptForConfiguration(): Promise<AdapterConfig> {
             haiku: haikuModel,
         },
         toolFormat,
+        upstreamHeaders,
     };
 }
 
@@ -292,4 +312,3 @@ async function promptForToolCallingStyle(): Promise<'native' | 'xml'> {
 
 // Run the CLI
 program.parse();
-

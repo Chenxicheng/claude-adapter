@@ -58,6 +58,10 @@ jest.mock('../src/converters/xmlStreaming', () => ({
 // We need to access internal functions, so we'll test through the exported module
 const handlersModule = require('../src/server/handlers');
 
+beforeEach(() => {
+  jest.clearAllMocks();
+});
+
 describe('Request Handlers', () => {
   describe('createMessagesHandler', () => {
     it('should create a handler function', () => {
@@ -73,6 +77,44 @@ describe('Request Handlers', () => {
 
       const handler = handlersModule.createMessagesHandler(config);
       expect(typeof handler).toBe('function');
+    });
+
+    it('should pass upstream headers to the OpenAI client', () => {
+      const config = {
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'test-key',
+        models: { opus: 'gpt-4', sonnet: 'gpt-4', haiku: 'gpt-4' },
+        upstreamHeaders: {
+          'HTTP-Referer': 'https://example.com',
+          'X-Title': 'Claude Adapter',
+        },
+      };
+
+      handlersModule.createMessagesHandler(config);
+
+      expect(mockOpenAI).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseURL: 'https://api.openai.com/v1',
+          apiKey: 'test-key',
+          defaultHeaders: config.upstreamHeaders,
+        })
+      );
+    });
+
+    it('should leave default headers undefined when not configured', () => {
+      const config = {
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'test-key',
+        models: { opus: 'gpt-4', sonnet: 'gpt-4', haiku: 'gpt-4' },
+      };
+
+      handlersModule.createMessagesHandler(config);
+
+      expect(mockOpenAI).toHaveBeenCalledWith(
+        expect.objectContaining({
+          defaultHeaders: undefined,
+        })
+      );
     });
 
     it('should handle validation errors', async () => {
@@ -188,7 +230,6 @@ describe('Error Response Handling', () => {
     let mockReply: any;
 
     beforeEach(() => {
-      jest.clearAllMocks();
       mockReply = {
         header: jest.fn().mockReturnThis(),
         code: jest.fn().mockReturnThis(),

@@ -5,6 +5,7 @@ export interface AdapterConfig {
     apiKey: string;
     models: ModelConfig;
     toolFormat?: 'native' | 'xml';  // Default: 'native'
+    upstreamHeaders?: Record<string, string>;
     port?: number;
 }
 

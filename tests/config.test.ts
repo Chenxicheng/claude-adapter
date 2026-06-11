@@ -77,7 +77,11 @@ describe('Config Utilities', () => {
             const config = {
                 baseUrl: 'https://api.example.com',
                 apiKey: 'test-key',
-                models: { opus: 'gpt-4', sonnet: 'gpt-3.5', haiku: 'gpt-3.5' }
+                models: { opus: 'gpt-4', sonnet: 'gpt-3.5', haiku: 'gpt-3.5' },
+                upstreamHeaders: {
+                    'HTTP-Referer': 'https://example.com',
+                    'X-Title': 'Claude Adapter'
+                }
             };
             writeFileSync(join(ADAPTER_DIR, 'config.json'), JSON.stringify(config));
 
@@ -98,7 +102,11 @@ describe('Config Utilities', () => {
             const config = {
                 baseUrl: 'https://api.test.com',
                 apiKey: 'key-123',
-                models: { opus: 'model-1', sonnet: 'model-2', haiku: 'model-3' }
+                models: { opus: 'model-1', sonnet: 'model-2', haiku: 'model-3' },
+                upstreamHeaders: {
+                    'HTTP-Referer': 'https://example.com',
+                    'X-Title': 'Claude Adapter'
+                }
             };
 
             saveConfig(config);

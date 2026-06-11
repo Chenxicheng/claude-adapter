@@ -130,6 +130,10 @@ const config: AdapterConfig = {
     opus: 'gpt-5.2-codex-max',
     sonnet: 'gpt-5.2-codex',
     haiku: 'gpt-5-mini'
+  },
+  upstreamHeaders: {
+    'HTTP-Referer': 'https://example.com',
+    'X-Title': 'Claude Adapter'
   }
 };
 

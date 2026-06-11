@@ -165,6 +165,7 @@ interface AdapterConfig {
     sonnet: string;   // Model for Claude Sonnet requests
     haiku: string;    // Model for Claude Haiku requests
   };
+  upstreamHeaders?: Record<string, string>; // Extra headers sent to the upstream OpenAI-compatible API
 }
 ```
 
@@ -182,6 +183,10 @@ const config = {
     opus: 'gpt-4-turbo',
     sonnet: 'gpt-4',
     haiku: 'gpt-3.5-turbo',
+  },
+  upstreamHeaders: {
+    'HTTP-Referer': 'https://example.com',
+    'X-Title': 'Claude Adapter',
   },
 };
 

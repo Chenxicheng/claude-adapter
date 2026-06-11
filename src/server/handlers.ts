@@ -31,6 +31,7 @@ export function createMessagesHandler(config: AdapterConfig) {
   const openai = new OpenAI({
     baseURL: config.baseUrl,
     apiKey: config.apiKey,
+    defaultHeaders: config.upstreamHeaders,
   });
 
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
