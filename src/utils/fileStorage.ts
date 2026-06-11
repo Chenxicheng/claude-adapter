@@ -40,6 +40,11 @@ export function appendJsonLine(filePath: string, record: object): void {
     appendFileSync(filePath, line, 'utf-8');
 }
 
+async function writeJsonLine(dirPath: string, filePath: string, line: string): Promise<void> {
+    await mkdir(dirPath, { recursive: true });
+    await appendFile(filePath, line, 'utf-8');
+}
+
 /**
  * Queue a JSONL write so request handling is not blocked by filesystem I/O.
  */
@@ -47,10 +52,7 @@ export function enqueueJsonLineWrite(dirPath: string, filePath: string, record: 
     const line = JSON.stringify(record) + '\n';
 
     jsonLineWriteQueue = jsonLineWriteQueue
-        .then(async () => {
-            await mkdir(dirPath, { recursive: true });
-            await appendFile(filePath, line, 'utf-8');
-        })
+        .then(() => writeJsonLine(dirPath, filePath, line))
         .catch(() => {
             // Fail silently - JSONL records are observability data, not request-critical state
         });
