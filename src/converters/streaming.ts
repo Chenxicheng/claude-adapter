@@ -1,11 +1,17 @@
 // Streaming converter: OpenAI SSE → Anthropic SSE
 import { FastifyReply } from 'fastify';
 import { Stream } from 'openai/streaming';
-import { AnthropicMessageResponse, AnthropicUsage } from '../types/anthropic';
 import { OpenAIStreamChunk, OpenAIStreamToolCall } from '../types/openai';
 import { generateToolUseId } from './tools';
 import { recordUsage } from '../utils/tokenUsage';
 import { recordError } from '../utils/errorLog';
+import {
+  applyOpenAIUsage,
+  buildMessageDeltaUsage,
+  buildMessageStartUsage,
+  buildStreamUsageRecord,
+  StreamUsageState,
+} from './usage';
 
 // Global counter and set for unique tool IDs within this process
 let toolIdCounter = 0;
@@ -34,7 +40,7 @@ export function generateUniqueToolId(): string {
   return id;
 }
 
-interface StreamingState {
+interface StreamingState extends StreamUsageState {
   messageId: string;
   model: string;
   responseModel: string;
@@ -49,10 +55,6 @@ interface StreamingState {
       blockIndex: number;
     }
   >;
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  usageReceived: boolean;
   hasStarted: boolean;
   textContent: string;
   textBlockOpen: boolean;
@@ -76,7 +78,6 @@ export async function streamOpenAIToAnthropic(
     currentToolCalls: new Map(),
     inputTokens: 0,
     outputTokens: 0,
-    cachedInputTokens: 0,
     usageReceived: false,
     hasStarted: false,
     textContent: '',
@@ -107,10 +108,7 @@ export async function streamOpenAIToAnthropic(
 function processChunk(chunk: OpenAIStreamChunk, state: StreamingState, raw: any): void {
   // Update usage if present
   if (chunk.usage) {
-    state.inputTokens = chunk.usage.prompt_tokens;
-    state.outputTokens = chunk.usage.completion_tokens;
-    state.cachedInputTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
-    state.usageReceived = true;
+    applyOpenAIUsage(state, chunk.usage);
   }
 
   // Capture response model from chunk
@@ -225,11 +223,7 @@ function sendMessageStart(state: StreamingState, raw: any): void {
       model: state.model,
       stop_reason: null,
       stop_sequence: null,
-      usage: {
-        input_tokens: state.inputTokens,
-        output_tokens: state.outputTokens,
-        cache_read_input_tokens: state.cachedInputTokens,
-      },
+      usage: buildMessageStartUsage(),
     },
   };
   sendSSE(event, raw);
@@ -300,22 +294,17 @@ function finishStream(state: StreamingState, raw: any): void {
   const hasToolCalls = state.currentToolCalls.size > 0;
   const stopReason = hasToolCalls ? 'tool_use' : 'end_turn';
 
-  // Record token usage
-  recordUsage({
+  const usageRecord = buildStreamUsageRecord({
     provider: state.provider,
     modelName: state.model,
     model: state.responseModel || undefined,
-    inputTokens: state.inputTokens,
-    outputTokens: state.outputTokens,
-    cachedInputTokens: state.cachedInputTokens || undefined,
-    streaming: true,
+    state,
   });
 
-  const usage = {
-    output_tokens: state.outputTokens,
-    cache_read_input_tokens: state.cachedInputTokens,
-    ...(state.usageReceived ? { input_tokens: state.inputTokens } : {}),
-  };
+  // Record token usage
+  recordUsage(usageRecord);
+
+  const usage = buildMessageDeltaUsage(state);
 
   // Send message_delta
   const deltaEvent = {

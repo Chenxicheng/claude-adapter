@@ -1,5 +1,4 @@
 // Tests for streaming converter functions
-import { EventEmitter } from 'events';
 
 // Mock tokenUsage to prevent tests from writing to real files
 jest.mock('../src/utils/tokenUsage', () => ({
@@ -61,6 +60,10 @@ import {
 } from '../src/converters/streaming';
 
 describe('Streaming Converter', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   describe('generateUniqueToolId', () => {
     beforeEach(() => {
       usedToolIds.clear();
@@ -115,6 +118,50 @@ describe('Streaming Converter', () => {
       expect(events[0].data.type).toBe('message_start');
       expect(events[0].data.message.role).toBe('assistant');
       expect(events[0].data.message.model).toBe('claude-4-opus');
+      expect(events[0].data.message.usage.input_tokens).toBe(0);
+      expect(events[0].data.message.usage.output_tokens).toBe(0);
+      expect(events[0].data.message.usage).not.toHaveProperty('cache_read_input_tokens');
+    });
+
+    it('should not record message_start placeholder usage', async () => {
+      const mockRaw = new MockRawResponse();
+      const mockReply = { raw: mockRaw } as any;
+      const recordUsage = require('../src/utils/tokenUsage').recordUsage;
+      const beforeFinalUsage: { eventType?: string; recordCalls?: number } = {};
+
+      const stream = {
+        nextCalls: 0,
+        async next(): Promise<IteratorResult<any>> {
+          this.nextCalls++;
+          if (this.nextCalls === 1) {
+            return {
+              value: { choices: [{ delta: { content: 'Hi' }, finish_reason: null }] },
+              done: false,
+            };
+          }
+          if (this.nextCalls === 2) {
+            beforeFinalUsage.eventType = mockRaw.getEvents()[0]?.data.type;
+            beforeFinalUsage.recordCalls = recordUsage.mock.calls.length;
+            return {
+              value: {
+                choices: [],
+                usage: { prompt_tokens: 4, completion_tokens: 2 },
+              },
+              done: false,
+            };
+          }
+          return { value: undefined, done: true };
+        },
+        [Symbol.asyncIterator](): AsyncIterator<any> {
+          return this;
+        },
+      };
+
+      await streamOpenAIToAnthropic(stream as any, mockReply, 'claude-4-opus');
+
+      expect(beforeFinalUsage.eventType).toBe('message_start');
+      expect(beforeFinalUsage.recordCalls).toBe(0);
+      expect(recordUsage).toHaveBeenCalledTimes(1);
     });
 
     it('should stream text content as content_block_delta events', async () => {
@@ -320,6 +367,7 @@ describe('Streaming Converter', () => {
     it('should handle usage information from chunks with empty choices (standard OpenAI behavior)', async () => {
       const mockRaw = new MockRawResponse();
       const mockReply = { raw: mockRaw } as any;
+      const recordUsage = require('../src/utils/tokenUsage').recordUsage;
 
       const stream = createMockStream([
         { choices: [{ delta: { content: 'Test' }, finish_reason: null }] },
@@ -337,6 +385,15 @@ describe('Streaming Converter', () => {
       expect(events[0].data.type).toBe('message_start');
       expect(messageDelta!.data.usage.input_tokens).toBe(20);
       expect(messageDelta!.data.usage.output_tokens).toBe(10);
+      expect(messageDelta!.data.usage).not.toHaveProperty('cache_read_input_tokens');
+      expect(recordUsage).toHaveBeenCalledTimes(1);
+      expect(recordUsage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          inputTokens: 20,
+          outputTokens: 10,
+          usageStatus: 'complete',
+        })
+      );
     });
 
     it('should include input_tokens when upstream reports zero prompt tokens', async () => {
@@ -363,6 +420,7 @@ describe('Streaming Converter', () => {
     it('should omit input_tokens from message_delta when upstream usage is missing', async () => {
       const mockRaw = new MockRawResponse();
       const mockReply = { raw: mockRaw } as any;
+      const recordUsage = require('../src/utils/tokenUsage').recordUsage;
 
       const stream = createMockStream([
         { choices: [{ delta: { content: 'No usage' }, finish_reason: null }] },
@@ -375,6 +433,17 @@ describe('Streaming Converter', () => {
       const messageDelta = events.find((e) => e.data.type === 'message_delta');
 
       expect(messageDelta!.data.usage).not.toHaveProperty('input_tokens');
+      expect(recordUsage).toHaveBeenCalledTimes(1);
+      const usageRecord = recordUsage.mock.calls[0][0];
+      expect(usageRecord).toEqual(
+        expect.objectContaining({
+          usageStatus: 'missing_final_chunk',
+          streaming: true,
+        })
+      );
+      expect(usageRecord).not.toHaveProperty('inputTokens');
+      expect(usageRecord).not.toHaveProperty('outputTokens');
+      expect(usageRecord).not.toHaveProperty('cachedInputTokens');
     });
 
     it('should include cached tokens in streaming usage events', async () => {
@@ -401,6 +470,30 @@ describe('Streaming Converter', () => {
       expect(messageDelta!.data.usage.input_tokens).toBe(500);
       expect(messageDelta!.data.usage.output_tokens).toBe(10);
       expect(messageDelta!.data.usage.cache_read_input_tokens).toBe(400);
+    });
+
+    it('should preserve explicit zero cached tokens in streaming usage events', async () => {
+      const mockRaw = new MockRawResponse();
+      const mockReply = { raw: mockRaw } as any;
+
+      const stream = createMockStream([
+        { choices: [{ delta: { content: 'Uncached response' }, finish_reason: null }] },
+        {
+          choices: [],
+          usage: {
+            prompt_tokens: 50,
+            completion_tokens: 5,
+            prompt_tokens_details: { cached_tokens: 0 },
+          },
+        },
+      ]);
+
+      await streamOpenAIToAnthropic(stream as any, mockReply, 'claude-4-opus');
+
+      const events = mockRaw.getEvents();
+      const messageDelta = events.find((e) => e.data.type === 'message_delta');
+
+      expect(messageDelta!.data.usage).toHaveProperty('cache_read_input_tokens', 0);
     });
 
     it('should handle stream errors gracefully', async () => {

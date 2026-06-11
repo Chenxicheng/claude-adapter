@@ -6,6 +6,22 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Streaming Usage**: Distinguished complete final usage from missing final usage chunks in streaming usage records.
+
+### Changed
+
+- **Token Usage**: Added `usageStatus` to JSONL usage records so complete and incomplete usage data can be audited.
+
+### Build
+
+- **Lint**: Added ESLint 9 flat config compatibility for the existing lint script.
+
+---
+
 ## [2.2.0] — 2026-05-30
 
 ### Added

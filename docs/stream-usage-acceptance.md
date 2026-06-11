@@ -4,7 +4,20 @@
 
 OpenAI-compatible streaming responses return complete usage data in a final usage chunk when `stream_options.include_usage` is enabled. Claude-style SSE sends `message_start` before content begins, so `message_start.message.usage.input_tokens` can be `0` before the final OpenAI usage chunk arrives.
 
-This acceptance check verifies that the final `message_delta.usage` carries the completed input token count without delaying the stream start or changing unrelated request, response, or tool-call behavior.
+This acceptance check verifies that the final `message_delta.usage` carries the completed token counts without delaying the stream start or changing unrelated request, response, or tool-call behavior. `message_start.message.usage` is a Claude API compatibility placeholder in this adapter and must not be treated as recorded usage or cost data.
+
+Official references:
+
+- Claude streaming messages: https://platform.claude.com/docs/en/build-with-claude/streaming
+- OpenAI chat completion streaming events: https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events/
+
+## Usage Mapping
+
+| OpenAI final usage field              | Anthropic usage field     |
+| ------------------------------------- | ------------------------- |
+| `prompt_tokens`                       | `input_tokens`            |
+| `completion_tokens`                   | `output_tokens`           |
+| `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens` |
 
 ## Acceptance Goals
 
@@ -12,8 +25,10 @@ This acceptance check verifies that the final `message_delta.usage` carries the 
 - XML stream maps OpenAI `usage.prompt_tokens` to `message_delta.usage.input_tokens`.
 - If no upstream usage chunk arrives, final `message_delta.usage` must not emit a synthetic `input_tokens: 0`.
 - `message_start` remains the first event and is not delayed waiting for final usage.
+- `message_start.message.usage` remains a transport compatibility placeholder and is not recorded.
+- Streaming usage is recorded once at stream end with `usageStatus: "complete"` or `usageStatus: "missing_final_chunk"`.
 - SSE event order remains unchanged.
-- Text streaming, tool calls, stop reason mapping, `recordUsage`, and non-stream response logic remain unchanged.
+- Text streaming, tool calls, stop reason mapping, and non-stream response conversion remain unchanged.
 
 ## Non-Goals
 
@@ -47,10 +62,18 @@ Native stream must also omit `message_delta.usage.input_tokens` when no upstream
 
 XML stream must satisfy the same final usage checks and keep `message_start` first.
 
+Usage recording must satisfy:
+
+- Non-stream responses record `usageStatus: "complete"` with real usage fields.
+- Stream responses record usage only once, after the stream ends.
+- Stream responses with final usage record `usageStatus: "complete"` with real usage fields.
+- Stream responses without final usage record `usageStatus: "missing_final_chunk"` and omit unknown token fields.
+- `message_start.message.usage` placeholder values are never persisted as token usage.
+
 ## Verification Commands
 
 ```bash
-npm test -- --runTestsByPath tests/streaming.test.ts tests/xmlStreaming.test.ts tests/response.test.ts tests/request.test.ts --runInBand
+npm test -- --runTestsByPath tests/streaming.test.ts tests/xmlStreaming.test.ts tests/response.test.ts tests/request.test.ts tests/tokenUsage.test.ts tests/handlers.test.ts --runInBand
 npm run build
 npm run lint
 ```
@@ -60,5 +83,7 @@ npm run lint
 - Diff only touches usage completion, types, tests, and this acceptance document.
 - Stream first event is still not delayed.
 - Native and XML stream paths expose final usage consistently.
-- Non-stream usage mapping is not modified.
+- Non-stream response conversion is not modified.
+- Usage records distinguish complete usage from a missing final usage chunk.
+- Lint infrastructure changes are reviewed as a separate atomic change from usage behavior.
 - No secrets, real network calls, or compatibility branches are introduced.
