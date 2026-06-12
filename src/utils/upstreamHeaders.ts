@@ -2,7 +2,6 @@ const RESERVED_HEADERS = new Set([
   'authorization',
   'content-type',
   'accept',
-  'user-agent',
   'content-length',
   'host',
 ]);

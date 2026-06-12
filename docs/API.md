@@ -165,7 +165,7 @@ interface AdapterConfig {
     sonnet: string;   // Model for Claude Sonnet requests
     haiku: string;    // Model for Claude Haiku requests
   };
-  upstreamHeaders?: Record<string, string>; // Extra headers sent to the upstream OpenAI-compatible API
+  upstreamHeaders?: Record<string, string>; // Default headers sent to the upstream OpenAI-compatible API
 }
 ```
 
@@ -187,6 +187,7 @@ const config = {
   upstreamHeaders: {
     'HTTP-Referer': 'https://example.com',
     'X-Title': 'Claude Adapter',
+    'User-Agent': 'Claude-Adapter/2.2',
   },
 };
 

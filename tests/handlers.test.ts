@@ -87,6 +87,7 @@ describe('Request Handlers', () => {
         upstreamHeaders: {
           'HTTP-Referer': 'https://example.com',
           'X-Title': 'Claude Adapter',
+          'User-Agent': 'Claude-Adapter/2.2',
         },
       };
 

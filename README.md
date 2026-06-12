@@ -133,7 +133,8 @@ const config: AdapterConfig = {
   },
   upstreamHeaders: {
     'HTTP-Referer': 'https://example.com',
-    'X-Title': 'Claude Adapter'
+    'X-Title': 'Claude Adapter',
+    'User-Agent': 'Claude-Adapter/2.2'
   }
 };
 
