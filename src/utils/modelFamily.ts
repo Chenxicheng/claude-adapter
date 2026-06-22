@@ -1,21 +1,28 @@
+function normalizeModelName(model: string): string {
+  return model.trim().toLowerCase();
+}
+
 export function isOpenAIOSeriesModel(model: string): boolean {
-  const normalized = model.trim().toLowerCase();
+  const normalized = normalizeModelName(model);
   return normalized.length > 1 && normalized.startsWith('o') && /\d/.test(normalized[1]);
 }
 
+export function isOpenAIGpt5Model(model: string): boolean {
+  return normalizeModelName(model).startsWith('gpt-5');
+}
+
 export function isOpenAIReasoningModel(model: string): boolean {
-  const normalized = model.trim().toLowerCase();
-  return isOpenAIOSeriesModel(normalized) || normalized.startsWith('gpt-5');
+  return isOpenAIOSeriesModel(model) || isOpenAIGpt5Model(model);
 }
 
 export function isGlm5Model(model: string): boolean {
-  return model.trim().toLowerCase().startsWith('glm-5');
+  return normalizeModelName(model).startsWith('glm-5');
 }
 
 export function isGlm52Model(model: string): boolean {
-  return model.trim().toLowerCase().startsWith('glm-5.2');
+  return normalizeModelName(model).startsWith('glm-5.2');
 }
 
 export function isQwen3Model(model: string): boolean {
-  return model.trim().toLowerCase().startsWith('qwen3');
+  return normalizeModelName(model).startsWith('qwen3');
 }

@@ -13,6 +13,9 @@ import {
   StreamUsageState,
 } from './usage';
 
+type RawReply = FastifyReply['raw'];
+type SSEEvent = { type: string; [key: string]: unknown };
+
 // Global counter and set for unique tool IDs within this process
 let toolIdCounter = 0;
 export const usedToolIds = new Set<string>();
@@ -56,7 +59,6 @@ interface StreamingState extends StreamUsageState {
     }
   >;
   hasStarted: boolean;
-  textContent: string;
   textBlockOpen: boolean;
   thinkingBlockOpen: boolean;
 }
@@ -81,7 +83,6 @@ export async function streamOpenAIToAnthropic(
     outputTokens: 0,
     usageReceived: false,
     hasStarted: false,
-    textContent: '',
     textBlockOpen: false,
     thinkingBlockOpen: false,
   };
@@ -107,7 +108,7 @@ export async function streamOpenAIToAnthropic(
   }
 }
 
-function processChunk(chunk: OpenAIStreamChunk, state: StreamingState, raw: any): void {
+function processChunk(chunk: OpenAIStreamChunk, state: StreamingState, raw: RawReply): void {
   // Update usage if present
   if (chunk.usage) {
     applyOpenAIUsage(state, chunk.usage);
@@ -133,7 +134,7 @@ function processChunk(chunk: OpenAIStreamChunk, state: StreamingState, raw: any)
   if (reasoning && state.currentToolCalls.size === 0) {
     if (!state.thinkingBlockOpen) {
       closeTextBlock(state, raw);
-      sendContentBlockStart(state.contentBlockIndex, 'thinking', '', raw);
+      sendThinkingBlockStart(state.contentBlockIndex, raw);
       state.thinkingBlockOpen = true;
     }
 
@@ -145,11 +146,10 @@ function processChunk(chunk: OpenAIStreamChunk, state: StreamingState, raw: any)
     closeThinkingBlock(state, raw);
 
     if (!state.textBlockOpen) {
-      sendContentBlockStart(state.contentBlockIndex, 'text', '', raw);
+      sendTextBlockStart(state.contentBlockIndex, raw);
       state.textBlockOpen = true;
     }
 
-    state.textContent += delta.content;
     sendTextDelta(state.contentBlockIndex, delta.content, raw);
   }
 
@@ -174,7 +174,7 @@ function processChunk(chunk: OpenAIStreamChunk, state: StreamingState, raw: any)
 function processToolCallDelta(
   toolCall: OpenAIStreamToolCall,
   state: StreamingState,
-  raw: any
+  raw: RawReply
 ): void {
   const index = toolCall.index;
 
@@ -203,7 +203,7 @@ function processToolCallDelta(
     };
     state.currentToolCalls.set(index, newToolCall);
 
-    sendContentBlockStart(blockIndex, 'tool_use', newToolCall.name, raw, newToolCall.id);
+    sendToolUseBlockStart(blockIndex, newToolCall.name, raw, newToolCall.id);
   }
 
   // Update tool call data
@@ -219,7 +219,7 @@ function processToolCallDelta(
   }
 }
 
-function closeThinkingBlock(state: StreamingState, raw: any): void {
+function closeThinkingBlock(state: StreamingState, raw: RawReply): void {
   if (!state.thinkingBlockOpen) {
     return;
   }
@@ -229,18 +229,17 @@ function closeThinkingBlock(state: StreamingState, raw: any): void {
   state.contentBlockIndex++;
 }
 
-function closeTextBlock(state: StreamingState, raw: any): void {
+function closeTextBlock(state: StreamingState, raw: RawReply): void {
   if (!state.textBlockOpen) {
     return;
   }
 
   sendContentBlockStop(state.contentBlockIndex, raw);
   state.textBlockOpen = false;
-  state.textContent = '';
   state.contentBlockIndex++;
 }
 
-function sendMessageStart(state: StreamingState, raw: any): void {
+function sendMessageStart(state: StreamingState, raw: RawReply): void {
   const event = {
     type: 'message_start',
     message: {
@@ -257,37 +256,45 @@ function sendMessageStart(state: StreamingState, raw: any): void {
   sendSSE(event, raw);
 }
 
-function sendContentBlockStart(
-  index: number,
-  type: 'text' | 'thinking' | 'tool_use',
-  textOrName: string,
-  raw: any,
-  id?: string
-): void {
-  let contentBlock: any;
-
-  if (type === 'text') {
-    contentBlock = { type: 'text', text: '' };
-  } else if (type === 'thinking') {
-    contentBlock = { type: 'thinking', thinking: '' };
-  } else {
-    contentBlock = {
-      type: 'tool_use',
-      id: id || generateToolUseId(),
-      name: textOrName,
-      input: {},
-    };
-  }
-
-  const event = {
-    type: 'content_block_start',
-    index,
-    content_block: contentBlock,
-  };
-  sendSSE(event, raw);
+function sendTextBlockStart(index: number, raw: RawReply): void {
+  sendSSE(
+    {
+      type: 'content_block_start',
+      index,
+      content_block: { type: 'text', text: '' },
+    },
+    raw
+  );
 }
 
-function sendThinkingDelta(index: number, thinking: string, raw: any): void {
+function sendThinkingBlockStart(index: number, raw: RawReply): void {
+  sendSSE(
+    {
+      type: 'content_block_start',
+      index,
+      content_block: { type: 'thinking', thinking: '' },
+    },
+    raw
+  );
+}
+
+function sendToolUseBlockStart(index: number, name: string, raw: RawReply, id?: string): void {
+  sendSSE(
+    {
+      type: 'content_block_start',
+      index,
+      content_block: {
+        type: 'tool_use',
+        id: id || generateToolUseId(),
+        name,
+        input: {},
+      },
+    },
+    raw
+  );
+}
+
+function sendThinkingDelta(index: number, thinking: string, raw: RawReply): void {
   const event = {
     type: 'content_block_delta',
     index,
@@ -299,7 +306,7 @@ function sendThinkingDelta(index: number, thinking: string, raw: any): void {
   sendSSE(event, raw);
 }
 
-function sendTextDelta(index: number, text: string, raw: any): void {
+function sendTextDelta(index: number, text: string, raw: RawReply): void {
   const event = {
     type: 'content_block_delta',
     index,
@@ -311,7 +318,7 @@ function sendTextDelta(index: number, text: string, raw: any): void {
   sendSSE(event, raw);
 }
 
-function sendInputJsonDelta(index: number, partialJson: string, raw: any): void {
+function sendInputJsonDelta(index: number, partialJson: string, raw: RawReply): void {
   const event = {
     type: 'content_block_delta',
     index,
@@ -323,7 +330,7 @@ function sendInputJsonDelta(index: number, partialJson: string, raw: any): void 
   sendSSE(event, raw);
 }
 
-function sendContentBlockStop(index: number, raw: any): void {
+function sendContentBlockStop(index: number, raw: RawReply): void {
   const event = {
     type: 'content_block_stop',
     index,
@@ -331,7 +338,7 @@ function sendContentBlockStop(index: number, raw: any): void {
   sendSSE(event, raw);
 }
 
-function finishStream(state: StreamingState, raw: any): void {
+function finishStream(state: StreamingState, raw: RawReply): void {
   closeThinkingBlock(state, raw);
   closeTextBlock(state, raw);
 
@@ -368,7 +375,7 @@ function finishStream(state: StreamingState, raw: any): void {
   raw.end();
 }
 
-function sendErrorEvent(error: Error, state: StreamingState, raw: any): void {
+function sendErrorEvent(error: Error, state: StreamingState, raw: RawReply): void {
   // Record error to file
   recordError(error, {
     requestId: state.messageId,
@@ -388,7 +395,7 @@ function sendErrorEvent(error: Error, state: StreamingState, raw: any): void {
   raw.end();
 }
 
-function sendSSE(data: any, raw: any): void {
+function sendSSE(data: SSEEvent, raw: RawReply): void {
   raw.write(`event: ${data.type}\n`);
   raw.write(`data: ${JSON.stringify(data)}\n\n`);
 }

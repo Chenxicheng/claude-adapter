@@ -9,7 +9,9 @@ import {
 } from '../types/anthropic';
 import {
   OpenAIChatRequest,
+  OpenAIAssistantMessage,
   OpenAIMessage,
+  OpenAIToolCall,
   OpenAIUserContentPart,
   OpenAIToolMessage,
 } from '../types/openai';
@@ -18,6 +20,7 @@ import { getCachedUpdateInfo } from '../utils/update';
 import {
   isGlm52Model,
   isGlm5Model,
+  isOpenAIGpt5Model,
   isOpenAIOSeriesModel,
   isOpenAIReasoningModel,
   isQwen3Model,
@@ -31,6 +34,8 @@ const OPENAI_REASONING_BUDGET = {
   low: 4000,
   high: 16000,
 };
+const ASSISTANT_PREFILL_TOKENS = new Set(['{', '[', '```', '{"', '[{']);
+const TOOL_ID_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
 /**
  * Modify system prompt to replace Claude Code identifier with Claude Adapter branding
@@ -144,7 +149,7 @@ function resolveGlmReasoningEffort(
 }
 
 function shouldUseMaxCompletionTokens(targetModel: string): boolean {
-  return isOpenAIOSeriesModel(targetModel) || targetModel.trim().toLowerCase().startsWith('gpt-5');
+  return isOpenAIOSeriesModel(targetModel) || isOpenAIGpt5Model(targetModel);
 }
 
 function applyOpenAIRequestOptions(
@@ -343,15 +348,8 @@ function shouldPreserveReasoningContent(targetModel: string): boolean {
  * Anthropic supports prefilling assistant responses, but other providers don't
  */
 function isAssistantPrefill(content: string): boolean {
-  const prefillTokens = ['{', '[', '```', '{"', '[{'];
   const trimmed = content.trim();
-
-  // Check against common prefill tokens or very short content
-  if (prefillTokens.includes(trimmed) || trimmed.length <= 2) {
-    return true;
-  }
-
-  return false;
+  return ASSISTANT_PREFILL_TOKENS.has(trimmed) || trimmed.length <= 2;
 }
 
 /**
@@ -414,34 +412,44 @@ function convertMessage(
         });
       }
     } else {
-      // Assistant message with content blocks
-      const { textContent, toolCalls, reasoningContent } = processAssistantContentBlocks(
+      const assistantMsg = convertAssistantContentBlocks(
         msg.content,
-        ctx
+        ctx,
+        preserveReasoningContent
       );
-
-      // Skip assistant prefill messages when content is just a JSON starter
-      if (toolCalls.length === 0 && textContent && isAssistantPrefill(textContent)) {
-        return result; // Return empty - skip this message
+      if (assistantMsg) {
+        result.push(assistantMsg);
       }
-
-      const assistantMsg: OpenAIMessage = {
-        role: 'assistant',
-        content: textContent || null,
-      };
-
-      if (toolCalls.length > 0) {
-        (assistantMsg as any).tool_calls = toolCalls;
-      }
-      if (preserveReasoningContent && toolCalls.length > 0 && reasoningContent.length > 0) {
-        (assistantMsg as any).reasoning_content = reasoningContent;
-      }
-
-      result.push(assistantMsg);
     }
   }
 
   return result;
+}
+
+function convertAssistantContentBlocks(
+  blocks: AnthropicContentBlock[],
+  ctx: IdDeduplicationContext,
+  preserveReasoningContent: boolean
+): OpenAIAssistantMessage | undefined {
+  const { textContent, toolCalls, reasoningContent } = processAssistantContentBlocks(blocks, ctx);
+
+  if (toolCalls.length === 0 && textContent && isAssistantPrefill(textContent)) {
+    return undefined;
+  }
+
+  const assistantMsg: OpenAIAssistantMessage = {
+    role: 'assistant',
+    content: textContent || null,
+  };
+
+  if (toolCalls.length > 0) {
+    assistantMsg.tool_calls = toolCalls;
+  }
+  if (preserveReasoningContent && toolCalls.length > 0 && reasoningContent.length > 0) {
+    assistantMsg.reasoning_content = reasoningContent;
+  }
+
+  return assistantMsg;
 }
 
 /**
@@ -461,41 +469,52 @@ function processUserContentBlocks(
     if (block.type === 'text') {
       userContent.push({ type: 'text', text: block.text });
     } else if (block.type === 'tool_result') {
-      const toolResult = block as AnthropicToolResultBlock;
-      let content: string;
-
-      if (typeof toolResult.content === 'string') {
-        content = toolResult.content;
-      } else if (Array.isArray(toolResult.content)) {
-        content = toolResult.content
-          .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-          .map((c) => c.text)
-          .join('\n');
-      } else {
-        content = '';
-      }
-
-      // Look up the deduplicated ID if one exists
-      let toolCallId = toolResult.tool_use_id;
-      if (ctx.idMappings.has(toolResult.tool_use_id)) {
-        const mappings = ctx.idMappings.get(toolResult.tool_use_id)!;
-        const idx = ctx.resultIndex.get(toolResult.tool_use_id) || 0;
-        if (idx < mappings.length) {
-          toolCallId = mappings[idx];
-          ctx.resultIndex.set(toolResult.tool_use_id, idx + 1);
-        }
-      }
+      const content = extractToolResultContent(block);
+      const toolCallId = resolveToolResultCallId(block.tool_use_id, ctx);
 
       toolResults.push({
         role: 'tool',
         tool_call_id: toolCallId,
-        content: toolResult.is_error ? `Error: ${content}` : content,
+        content: block.is_error ? `Error: ${content}` : content,
       });
     }
     // Images would need special handling for vision models - not implemented here
   }
 
   return { userContent, toolResults };
+}
+
+function extractToolResultContent(toolResult: AnthropicToolResultBlock): string {
+  if (typeof toolResult.content === 'string') {
+    return toolResult.content;
+  }
+
+  if (!Array.isArray(toolResult.content)) {
+    return '';
+  }
+
+  return toolResult.content
+    .filter(
+      (contentBlock): contentBlock is { type: 'text'; text: string } =>
+        contentBlock.type === 'text'
+    )
+    .map((contentBlock) => contentBlock.text)
+    .join('\n');
+}
+
+function resolveToolResultCallId(toolUseId: string, ctx: IdDeduplicationContext): string {
+  const mappings = ctx.idMappings.get(toolUseId);
+  if (!mappings) {
+    return toolUseId;
+  }
+
+  const idx = ctx.resultIndex.get(toolUseId) || 0;
+  if (idx >= mappings.length) {
+    return toolUseId;
+  }
+
+  ctx.resultIndex.set(toolUseId, idx + 1);
+  return mappings[idx];
 }
 
 /**
@@ -508,15 +527,11 @@ function processAssistantContentBlocks(
 ): {
   textContent: string;
   reasoningContent: string;
-  toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
+  toolCalls: OpenAIToolCall[];
 } {
   let textContent = '';
   let reasoningContent = '';
-  const toolCalls: Array<{
-    id: string;
-    type: 'function';
-    function: { name: string; arguments: string };
-  }> = [];
+  const toolCalls: OpenAIToolCall[] = [];
 
   for (const block of blocks) {
     if (block.type === 'text') {
@@ -524,30 +539,8 @@ function processAssistantContentBlocks(
     } else if (block.type === 'thinking') {
       reasoningContent += block.thinking;
     } else if (block.type === 'tool_use') {
-      const toolUse = block as AnthropicToolUseBlock;
-      let idToUse = toolUse.id;
-
-      // If we've seen this ID before, generate a unique one
-      // This handles duplicate IDs without mutating the original request
-      if (ctx.seenIds.has(toolUse.id)) {
-        const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-        const originalLen = toolUse.id.length;
-
-        if (originalLen > 11) {
-          // Keep first 8 chars, randomize the rest
-          idToUse = toolUse.id.substring(0, 8);
-          for (let i = 8; i < originalLen; i++) {
-            idToUse += chars.charAt(Math.floor(Math.random() * chars.length));
-          }
-        } else {
-          // Generate entirely new ID of same length
-          idToUse = '';
-          for (let i = 0; i < originalLen; i++) {
-            idToUse += chars.charAt(Math.floor(Math.random() * chars.length));
-          }
-        }
-        console.log(`[adapter] Repair ID: ${toolUse.id} → ${idToUse}`);
-      }
+      const toolUse = block;
+      const idToUse = getUniqueToolUseId(toolUse, ctx);
       ctx.seenIds.add(idToUse);
 
       // Track the mapping for tool_result matching
@@ -568,4 +561,33 @@ function processAssistantContentBlocks(
   }
 
   return { textContent, reasoningContent, toolCalls };
+}
+
+function getUniqueToolUseId(
+  toolUse: AnthropicToolUseBlock,
+  ctx: IdDeduplicationContext
+): string {
+  if (!ctx.seenIds.has(toolUse.id)) {
+    return toolUse.id;
+  }
+
+  const repairedId = repairDuplicateToolId(toolUse.id);
+  console.log(`[adapter] Repair ID: ${toolUse.id} → ${repairedId}`);
+  return repairedId;
+}
+
+function repairDuplicateToolId(originalId: string): string {
+  if (originalId.length > 11) {
+    return `${originalId.substring(0, 8)}${randomToolIdSuffix(originalId.length - 8)}`;
+  }
+
+  return randomToolIdSuffix(originalId.length);
+}
+
+function randomToolIdSuffix(length: number): string {
+  let suffix = '';
+  for (let i = 0; i < length; i++) {
+    suffix += TOOL_ID_CHARS.charAt(Math.floor(Math.random() * TOOL_ID_CHARS.length));
+  }
+  return suffix;
 }

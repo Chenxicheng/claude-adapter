@@ -2,6 +2,20 @@ import { TokenUsageRecord } from '../utils/tokenUsage';
 import { AnthropicUsage } from '../types/anthropic';
 import { OpenAIUsage } from '../types/openai';
 
+interface NormalizedUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+}
+
+interface MessageDeltaUsage {
+  input_tokens?: number;
+  output_tokens: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
 export interface StreamUsageState {
   inputTokens: number;
   outputTokens: number;
@@ -22,12 +36,7 @@ export function getCacheReadInputTokens(usage?: OpenAIUsage): number | undefined
   return usage.prompt_tokens_details?.cached_tokens;
 }
 
-export function normalizeAnthropicUsageFromOpenAI(usage?: OpenAIUsage): {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
-} {
+export function normalizeAnthropicUsageFromOpenAI(usage?: OpenAIUsage): NormalizedUsage {
   const promptTokens = usage?.prompt_tokens ?? 0;
   const outputTokens = usage?.completion_tokens ?? 0;
   const cacheReadInputTokens = getCacheReadInputTokens(usage);
@@ -37,27 +46,23 @@ export function normalizeAnthropicUsageFromOpenAI(usage?: OpenAIUsage): {
     promptTokens - (cacheReadInputTokens ?? 0) - (cacheCreationInputTokens ?? 0)
   );
 
-  return {
+  const normalized: NormalizedUsage = {
     inputTokens,
     outputTokens,
-    ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
-    ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
   };
+  applyNormalizedCacheFields(normalized, cacheReadInputTokens, cacheCreationInputTokens);
+  return normalized;
 }
 
 export function buildAnthropicUsageFromOpenAI(usage?: OpenAIUsage): AnthropicUsage {
   const normalized = normalizeAnthropicUsageFromOpenAI(usage);
 
-  return {
+  const anthropicUsage: AnthropicUsage = {
     input_tokens: normalized.inputTokens,
     output_tokens: normalized.outputTokens,
-    ...(normalized.cacheReadInputTokens !== undefined
-      ? { cache_read_input_tokens: normalized.cacheReadInputTokens }
-      : {}),
-    ...(normalized.cacheCreationInputTokens !== undefined
-      ? { cache_creation_input_tokens: normalized.cacheCreationInputTokens }
-      : {}),
   };
+  applyAnthropicCacheFields(anthropicUsage, normalized);
+  return anthropicUsage;
 }
 
 export function applyOpenAIUsage(state: StreamUsageState, usage: OpenAIUsage): void {
@@ -80,22 +85,20 @@ export function buildMessageStartUsage(): {
   };
 }
 
-export function buildMessageDeltaUsage(state: StreamUsageState): {
-  input_tokens?: number;
-  output_tokens: number;
-  cache_read_input_tokens?: number;
-  cache_creation_input_tokens?: number;
-} {
-  return {
+export function buildMessageDeltaUsage(state: StreamUsageState): MessageDeltaUsage {
+  const usage: MessageDeltaUsage = {
     output_tokens: state.outputTokens,
-    ...(state.usageReceived ? { input_tokens: state.inputTokens } : {}),
-    ...(state.cachedInputTokens !== undefined
-      ? { cache_read_input_tokens: state.cachedInputTokens }
-      : {}),
-    ...(state.cacheCreationInputTokens !== undefined
-      ? { cache_creation_input_tokens: state.cacheCreationInputTokens }
-      : {}),
   };
+  if (state.usageReceived) {
+    usage.input_tokens = state.inputTokens;
+  }
+  applyAnthropicCacheFields(usage, {
+    inputTokens: state.inputTokens,
+    outputTokens: state.outputTokens,
+    cacheReadInputTokens: state.cachedInputTokens,
+    cacheCreationInputTokens: state.cacheCreationInputTokens,
+  });
+  return usage;
 }
 
 export function buildStreamUsageRecord(args: {
@@ -116,15 +119,48 @@ export function buildStreamUsageRecord(args: {
     return base;
   }
 
-  return {
+  const record: Omit<TokenUsageRecord, 'timestamp'> = {
     ...base,
     inputTokens: args.state.inputTokens,
     outputTokens: args.state.outputTokens,
-    ...(args.state.cachedInputTokens !== undefined
-      ? { cachedInputTokens: args.state.cachedInputTokens }
-      : {}),
-    ...(args.state.cacheCreationInputTokens !== undefined
-      ? { cacheCreationInputTokens: args.state.cacheCreationInputTokens }
-      : {}),
   };
+  applyRecordCacheFields(record, args.state);
+  return record;
+}
+
+function applyNormalizedCacheFields(
+  usage: NormalizedUsage,
+  cacheReadInputTokens: number | undefined,
+  cacheCreationInputTokens: number | undefined
+): void {
+  if (cacheReadInputTokens !== undefined) {
+    usage.cacheReadInputTokens = cacheReadInputTokens;
+  }
+  if (cacheCreationInputTokens !== undefined) {
+    usage.cacheCreationInputTokens = cacheCreationInputTokens;
+  }
+}
+
+function applyAnthropicCacheFields(
+  usage: AnthropicUsage | MessageDeltaUsage,
+  normalized: NormalizedUsage
+): void {
+  if (normalized.cacheReadInputTokens !== undefined) {
+    usage.cache_read_input_tokens = normalized.cacheReadInputTokens;
+  }
+  if (normalized.cacheCreationInputTokens !== undefined) {
+    usage.cache_creation_input_tokens = normalized.cacheCreationInputTokens;
+  }
+}
+
+function applyRecordCacheFields(
+  record: Omit<TokenUsageRecord, 'timestamp'>,
+  state: StreamUsageState
+): void {
+  if (state.cachedInputTokens !== undefined) {
+    record.cachedInputTokens = state.cachedInputTokens;
+  }
+  if (state.cacheCreationInputTokens !== undefined) {
+    record.cacheCreationInputTokens = state.cacheCreationInputTokens;
+  }
 }
