@@ -1,6 +1,6 @@
 {
   "name": "claude-adapter",
-  "version": "2.2.0",
+  "version": "1.1.0",
   "description": "Proxy to convert Anthropic API requests to OpenAI format for Claude Code",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,11 +14,11 @@
     "test": "jest",
     "lint": "eslint src/**/*.ts tests/**/*.ts",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "release:assets": "node scripts/build-release-assets.mjs",
     "prepublishOnly": "npm run build && npm test"
   },
   "files": [
     "dist",
-    "README.md",
     "LICENSE"
   ],
   "keywords": [
