@@ -49,10 +49,10 @@ Review-fix work completed:
 These commands passed after the review fixes:
 
 ```bash
-npx prettier --check CHANGELOG.md docs/stream-usage-acceptance.md src/converters/streaming.ts src/converters/xmlStreaming.ts src/server/handlers.ts src/server/index.ts src/utils/config.ts src/utils/metadata.ts src/utils/tokenUsage.ts src/utils/validation.ts tests/errorLog.test.ts tests/fileStorage.test.ts tests/handlers.test.ts tests/metadata.test.ts tests/streaming.test.ts tests/tokenUsage.test.ts tests/xmlStreaming.test.ts eslint.config.js src/converters/usage.ts
+npx prettier --check CHANGELOG.md docs/stream-usage-acceptance.md src/converters/streaming.ts src/server/handlers.ts src/server/index.ts src/utils/config.ts src/utils/metadata.ts src/utils/tokenUsage.ts src/utils/validation.ts tests/errorLog.test.ts tests/fileStorage.test.ts tests/handlers.test.ts tests/metadata.test.ts tests/streaming.test.ts tests/tokenUsage.test.ts eslint.config.js src/converters/usage.ts
 npm run lint
 npm run build
-npm test -- --runTestsByPath tests/streaming.test.ts tests/xmlStreaming.test.ts tests/response.test.ts tests/request.test.ts tests/tokenUsage.test.ts tests/handlers.test.ts --runInBand
+npm test -- --runTestsByPath tests/streaming.test.ts tests/response.test.ts tests/request.test.ts tests/tokenUsage.test.ts tests/handlers.test.ts --runInBand
 npm test -- --runInBand
 git diff --check
 ```

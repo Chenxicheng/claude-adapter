@@ -89,6 +89,20 @@ describe('Config Utilities', () => {
             expect(result).toEqual(config);
         });
 
+        it('should preserve legacy config fields without failing to load', () => {
+            const legacyConfig = {
+                baseUrl: 'https://api.example.com',
+                apiKey: 'test-key',
+                models: { opus: 'gpt-4', sonnet: 'gpt-3.5', haiku: 'gpt-3.5' },
+                toolFormat: 'xml',
+            };
+            writeFileSync(join(ADAPTER_DIR, 'config.json'), JSON.stringify(legacyConfig));
+
+            const result = loadConfig() as any;
+            expect(result.baseUrl).toBe(legacyConfig.baseUrl);
+            expect(result.toolFormat).toBe('xml');
+        });
+
         it('should return null for corrupted config', () => {
             writeFileSync(join(ADAPTER_DIR, 'config.json'), 'not valid json{');
 
@@ -127,6 +141,21 @@ describe('Config Utilities', () => {
             saveConfig(config);
 
             expect(existsSync(ADAPTER_DIR)).toBe(true);
+        });
+
+        it('should drop legacy toolFormat when rewriting config', () => {
+            saveConfig({
+                baseUrl: 'https://api.test.com',
+                apiKey: 'key-789',
+                models: { opus: 'model-1', sonnet: 'model-2', haiku: 'model-3' },
+                upstreamHeaders: {
+                    'HTTP-Referer': 'https://example.com',
+                },
+                toolFormat: 'xml',
+            } as any);
+
+            const content = JSON.parse(readFileSync(join(ADAPTER_DIR, 'config.json'), 'utf-8'));
+            expect(content.toolFormat).toBeUndefined();
         });
     });
 

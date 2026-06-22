@@ -15,6 +15,7 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 ### Changed
 
 - **Token Usage**: Added `usageStatus` to JSONL usage records so complete and incomplete usage data can be audited.
+- **Tool Calling**: Removed the legacy non-native tool-calling path and standardized the adapter on native tool/function calling only.
 
 ### Build
 
@@ -46,7 +47,7 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 ### Performance
 
 - **Metadata**: Implemented an in-memory cache for `loadMetadata` to eliminate redundant synchronous disk reads, reducing lookup times from ~160ms to ~1ms.
-- **XML Mode**: Switched to array accumulation and join for XML-mode user content formatting to ensure efficient O(N) allocation.
+- **Legacy Tool Path**: Switched to array accumulation and join for the legacy non-native tool-calling formatter to ensure efficient O(N) allocation.
 
 ### Refactored
 
@@ -79,14 +80,14 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ### Added
 
-- **XML Tool Calling**: Added support for models lacking native tool usage via XML injection, output parsing, and history reconstruction.
-- **Deterministic Output**: Enforced `temperature: 0` and `<think>` block filtering for XML mode to ensure reliability.
-- **CLI Setup**: Added interactive configuration for tool styles (`native` vs `xml`) and model capabilities.
+- **Legacy Tool Calling**: Added a non-native tool-calling path for models lacking native tool usage, including prompt injection, output parsing, and history reconstruction.
+- **Deterministic Output**: Enforced `temperature: 0` and `<think>` block filtering for the legacy non-native tool path to ensure reliability.
+- **CLI Setup**: Added interactive configuration for tool-calling capabilities and styles.
 
 ### Fixed
 
-- **XML History**: Resolved conversation history mismatches during multi-turn tool interactions.
-- **XML Parsing**: Improved resilience against whitespace variations and case sensitivity in model outputs.
+- **Legacy Tool History**: Resolved conversation history mismatches during multi-turn tool interactions.
+- **Legacy Tool Parsing**: Improved resilience against whitespace variations and case sensitivity in model outputs.
 
 ---
 

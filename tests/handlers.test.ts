@@ -50,10 +50,6 @@ jest.mock('../src/converters/streaming', () => ({
   streamOpenAIToAnthropic: jest.fn().mockResolvedValue(undefined),
 }));
 
-jest.mock('../src/converters/xmlStreaming', () => ({
-  streamXmlOpenAIToAnthropic: jest.fn().mockResolvedValue(undefined),
-}));
-
 // Import the handlers module to test generateRequestId
 // We need to access internal functions, so we'll test through the exported module
 const handlersModule = require('../src/server/handlers');
@@ -289,30 +285,6 @@ describe('Error Response Handling', () => {
         })
       );
       expect(streamOpenAIToAnthropic).toHaveBeenCalled();
-    });
-
-    it('should handle XML tool calling mode', async () => {
-      const xmlConfig = { ...config, toolFormat: 'xml' as const };
-      const handler = handlersModule.createMessagesHandler(xmlConfig);
-
-      const req = {
-        ...mockRequestBase,
-        stream: true,
-        tools: [{ name: 'test_tool', description: 'test', input_schema: {} }],
-      };
-
-      const mockStream = {
-        [Symbol.asyncIterator]: async function* () {
-          yield {};
-        },
-      };
-      mockCreateChatCompletion.mockResolvedValue(mockStream);
-      const streamXmlOpenAIToAnthropic =
-        require('../src/converters/xmlStreaming').streamXmlOpenAIToAnthropic;
-
-      await handler({ body: req }, mockReply);
-
-      expect(streamXmlOpenAIToAnthropic).toHaveBeenCalled();
     });
 
     it('should log info when non-streaming request completes', async () => {

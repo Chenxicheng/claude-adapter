@@ -22,7 +22,6 @@ Official references:
 ## Acceptance Goals
 
 - Native stream maps OpenAI `usage.prompt_tokens` to `message_delta.usage.input_tokens`.
-- XML stream maps OpenAI `usage.prompt_tokens` to `message_delta.usage.input_tokens`.
 - If no upstream usage chunk arrives, final `message_delta.usage` must not emit a synthetic `input_tokens: 0`.
 - `message_start` remains the first event and is not delayed waiting for final usage.
 - `message_start.message.usage` remains a transport compatibility placeholder and is not recorded.
@@ -60,8 +59,6 @@ Native stream must satisfy:
 
 Native stream must also omit `message_delta.usage.input_tokens` when no upstream usage chunk arrives, while preserving a real upstream `prompt_tokens: 0`.
 
-XML stream must satisfy the same final usage checks and keep `message_start` first.
-
 Usage recording must satisfy:
 
 - Non-stream responses record `usageStatus: "complete"` with real usage fields.
@@ -73,7 +70,7 @@ Usage recording must satisfy:
 ## Verification Commands
 
 ```bash
-npm test -- --runTestsByPath tests/streaming.test.ts tests/xmlStreaming.test.ts tests/response.test.ts tests/request.test.ts tests/tokenUsage.test.ts tests/handlers.test.ts --runInBand
+npm test -- --runTestsByPath tests/streaming.test.ts tests/response.test.ts tests/request.test.ts tests/tokenUsage.test.ts tests/handlers.test.ts --runInBand
 npm run build
 npm run lint
 ```
@@ -82,7 +79,7 @@ npm run lint
 
 - Diff only touches usage completion, types, tests, and this acceptance document.
 - Stream first event is still not delayed.
-- Native and XML stream paths expose final usage consistently.
+- Native stream exposes final usage consistently.
 - Non-stream response conversion is not modified.
 - Usage records distinguish complete usage from a missing final usage chunk.
 - Lint infrastructure changes are reviewed as a separate atomic change from usage behavior.

@@ -30,7 +30,7 @@ This adapter effectively "tricks" Claude Code into communicating with models it 
 
 - 🔄 **Protocol Translation Layer** — Implements a robust bi-directional conversion engine that maps Anthropic's message format to OpenAI's chat completion schema on the fly.
 - 🌊 **Server-Sent Events (SSE) Streaming** — Provides full support for real-time response streaming, ensuring that the interactive feel of Claude Code is preserved even when backend by different models.
-- 🛠️ **Tool Invocation Compatibility** — seamlessly translates tool definitions and function call requests, allowing complex agentic workflows to function correctly across model boundaries.
+- 🛠️ **Tool Invocation Compatibility** — Seamlessly translates tool definitions and function call requests for upstream models that support native tool/function calling.
 - ⚡ **Zero-Configuration Initialization** — Features an interactive CLI setup wizard that automates the generation of configuration files and environment variables.
 - 🔌 **Transparent Proxying** — Operates non-intrusively as a local service, requiring no modifications to the core Claude Code binary or internal logic.
 
@@ -82,6 +82,7 @@ npm install -g claude-adapter
    - **Base URL**: Enter the endpoint URL of your compatible provider.
    - **Authentication**: Securely input your API key.
    - **Model Mapping**: Define which OpenAI-compatible models should be aliased to Claude's internal identifiers (`opus`, `sonnet`, `haiku`).
+   - **Tool Support**: Upstream models must support native tool/function calling if you want Claude Code tools to work through the adapter.
 
 3. **Operational State:**
    Once configured, the adapter will start a local proxy server. Claude Code is automatically reconfigured to route traffic through this local endpoint.
@@ -178,6 +179,7 @@ For detailed type definitions and function signatures, please consult the [API D
 | System Prompts        |       ✅        | Mapped to 'system' role    |
 | Real-time Streaming   |       ✅        | SSE event translation      |
 | Tool/Function Calling |       ✅        | Bidirectional mapping      |
+| Native Tool Support   |       ✅        | Upstream model must support native tool/function calling |
 | Context Preservation  |       ✅        | Multi-turn history support |
 | Token Limits          |       ✅        | Parameter pass-through     |
 | Sampling (Temp/Top P) |       ✅        | Parameter pass-through     |

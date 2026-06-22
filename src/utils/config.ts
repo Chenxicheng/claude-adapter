@@ -31,7 +31,21 @@ export function saveConfig(config: AdapterConfig): void {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });
   }
 
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+  const normalizedConfig: AdapterConfig = {
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
+    models: config.models,
+  };
+
+  if (config.upstreamHeaders !== undefined) {
+    normalizedConfig.upstreamHeaders = config.upstreamHeaders;
+  }
+
+  if (config.port !== undefined) {
+    normalizedConfig.port = config.port;
+  }
+
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(normalizedConfig, null, 2), 'utf-8');
 }
 
 /**

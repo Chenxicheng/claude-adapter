@@ -7,6 +7,7 @@ Complete API documentation for **Claude Adapter** — *Adapt any model for Claud
 ### POST /v1/messages
 
 The main API endpoint that accepts Anthropic Messages API requests and proxies them to an OpenAI-compatible backend.
+Tool use requires an upstream model with native tool/function calling support.
 
 **Request Headers:**
 ```
