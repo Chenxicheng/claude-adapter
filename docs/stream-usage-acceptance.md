@@ -13,15 +13,17 @@ Official references:
 
 ## Usage Mapping
 
-| OpenAI final usage field              | Anthropic usage field     |
-| ------------------------------------- | ------------------------- |
-| `prompt_tokens`                       | `input_tokens`            |
-| `completion_tokens`                   | `output_tokens`           |
-| `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens` |
+| OpenAI final usage field              | Anthropic usage field         |
+| ------------------------------------- | ----------------------------- |
+| `prompt_tokens - cache*`              | `input_tokens`                |
+| `completion_tokens`                   | `output_tokens`               |
+| `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens`     |
+| `cache_creation_input_tokens`         | `cache_creation_input_tokens` |
 
 ## Acceptance Goals
 
-- Native stream maps OpenAI `usage.prompt_tokens` to `message_delta.usage.input_tokens`.
+- Native stream maps upstream prompt usage to Anthropic fresh-input semantics:
+  `input_tokens = prompt_tokens - cache_read_input_tokens - cache_creation_input_tokens`.
 - If no upstream usage chunk arrives, final `message_delta.usage` must not emit a synthetic `input_tokens: 0`.
 - `message_start` remains the first event and is not delayed waiting for final usage.
 - `message_start.message.usage` remains a transport compatibility placeholder and is not recorded.
@@ -32,13 +34,13 @@ Official references:
 ## Non-Goals
 
 - Do not estimate tokens locally with a tokenizer.
-- Do not change request conversion.
+- Do not add a new public route or Responses API surface.
 - Do not call a real upstream API or use a real API key.
 - Do not refactor unrelated code.
 
 ## Functional Check
 
-Use mock stream chunks with final OpenAI usage:
+Use mock stream chunks with final OpenAI-compatible usage:
 
 ```json
 {
@@ -52,10 +54,27 @@ Use mock stream chunks with final OpenAI usage:
 
 Native stream must satisfy:
 
-- `message_delta.usage.input_tokens === 20`
+- `message_delta.usage.input_tokens === 12`
 - `message_delta.usage.output_tokens === 10`
 - `message_delta.usage.cache_read_input_tokens === 8`
 - `message_start` is still the first event
+
+When an upstream returns direct cache creation fields, the adapter must also preserve them:
+
+```json
+{
+  "prompt_tokens": 120,
+  "completion_tokens": 12,
+  "cache_read_input_tokens": 80,
+  "cache_creation_input_tokens": 20
+}
+```
+
+Native stream must then satisfy:
+
+- `message_delta.usage.input_tokens === 20`
+- `message_delta.usage.cache_read_input_tokens === 80`
+- `message_delta.usage.cache_creation_input_tokens === 20`
 
 Native stream must also omit `message_delta.usage.input_tokens` when no upstream usage chunk arrives, while preserving a real upstream `prompt_tokens: 0`.
 
@@ -67,6 +86,13 @@ Usage recording must satisfy:
 - Stream responses without final usage record `usageStatus: "missing_final_chunk"` and omit unknown token fields.
 - `message_start.message.usage` placeholder values are never persisted as token usage.
 
+Reasoning trace compatibility must satisfy:
+
+- Upstream `delta.reasoning` or `delta.reasoning_content` chunks are displayed as
+  Anthropic-compatible `thinking_delta` events.
+- The adapter does not emit fake Anthropic `signature` / `signature_delta`
+  fields for third-party reasoning traces.
+
 ## Verification Commands
 
 ```bash
@@ -77,10 +103,11 @@ npm run lint
 
 ## Review Checklist
 
-- Diff only touches usage completion, types, tests, and this acceptance document.
+- Diff stays focused on model-family request conversion, usage completion, types, tests, and documentation.
 - Stream first event is still not delayed.
 - Native stream exposes final usage consistently.
-- Non-stream response conversion is not modified.
+- Non-stream response conversion maps upstream reasoning traces before text/tool blocks.
 - Usage records distinguish complete usage from a missing final usage chunk.
+- Third-party reasoning traces are displayed without fake Anthropic signatures.
 - Lint infrastructure changes are reviewed as a separate atomic change from usage behavior.
 - No secrets, real network calls, or compatibility branches are introduced.

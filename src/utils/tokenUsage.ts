@@ -10,6 +10,7 @@ export interface TokenUsageRecord {
   inputTokens?: number;
   outputTokens?: number;
   cachedInputTokens?: number;
+  cacheCreationInputTokens?: number;
   streaming: boolean;
   usageStatus: 'complete' | 'missing_final_chunk';
 }

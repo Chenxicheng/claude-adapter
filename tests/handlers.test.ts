@@ -300,5 +300,32 @@ describe('Error Response Handling', () => {
       // Verify no error was thrown and function completed
       expect(mockReply.send).toHaveBeenCalled();
     });
+
+    it('should record fresh input tokens instead of raw prompt tokens when cache data is present', async () => {
+      const handler = handlersModule.createMessagesHandler(config);
+      const recordUsage = require('../src/utils/tokenUsage').recordUsage;
+
+      mockCreateChatCompletion.mockResolvedValue({
+        id: 'chatcmpl-123',
+        choices: [{ finish_reason: 'stop', message: { content: 'Hello' } }],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 10,
+          cache_read_input_tokens: 60,
+          cache_creation_input_tokens: 20,
+        },
+        model: 'gpt-4',
+      });
+
+      await handler({ body: { ...mockRequestBase, stream: false } }, mockReply);
+
+      expect(recordUsage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          inputTokens: 20,
+          cachedInputTokens: 60,
+          cacheCreationInputTokens: 20,
+        })
+      );
+    });
   });
 });

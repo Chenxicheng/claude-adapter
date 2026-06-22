@@ -1,6 +1,6 @@
 # API Reference
 
-Complete API documentation for **Claude Adapter** — *Adapt any model for Claude Code*.
+Complete API documentation for **Claude Adapter** — _Adapt any model for Claude Code_.
 
 ## Endpoints
 
@@ -8,13 +8,16 @@ Complete API documentation for **Claude Adapter** — *Adapt any model for Claud
 
 The main API endpoint that accepts Anthropic Messages API requests and proxies them to an OpenAI-compatible backend.
 Tool use requires an upstream model with native tool/function calling support.
+This adapter currently targets the Chat Completions-style proxy path only. It does not expose a Responses API route yet.
 
 **Request Headers:**
+
 ```
 Content-Type: application/json
 ```
 
 **Request Body:**
+
 ```typescript
 {
   model: string;           // Required: Model name (passed through directly)
@@ -24,6 +27,13 @@ Content-Type: application/json
   temperature?: number;    // Optional: 0-1, sampling temperature
   top_p?: number;          // Optional: 0-1, nucleus sampling
   stream?: boolean;        // Optional: Enable streaming responses
+  thinking?: {
+    type?: 'enabled' | 'disabled' | 'adaptive';
+    budget_tokens?: number;
+  };
+  output_config?: {
+    effort?: 'low' | 'medium' | 'high' | 'max';
+  };
   stop_sequences?: string[]; // Optional: Stop sequences
   tools?: Tool[];          // Optional: Tool definitions
   tool_choice?: ToolChoice; // Optional: Tool selection preference
@@ -31,6 +41,7 @@ Content-Type: application/json
 ```
 
 **Message Format:**
+
 ```typescript
 {
   role: 'user' | 'assistant';
@@ -39,6 +50,7 @@ Content-Type: application/json
 ```
 
 **Response (Non-streaming):**
+
 ```typescript
 {
   id: string;
@@ -49,20 +61,47 @@ Content-Type: application/json
   stop_reason: 'end_turn' | 'max_tokens' | 'tool_use' | null;
   stop_sequence: string | null;
   usage: {
-    input_tokens: number;
+    input_tokens: number; // Fresh input only: excludes cache read/create tokens
     output_tokens: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
   };
 }
 ```
 
 **Response (Streaming):**
 Server-Sent Events (SSE) with the following event types:
+
 - `message_start` - Initial message metadata
 - `content_block_start` - Start of a content block
 - `content_block_delta` - Content update
 - `content_block_stop` - End of a content block
 - `message_delta` - Final message metadata with stop_reason
 - `message_stop` - Stream complete
+
+If an upstream vendor sends private reasoning traces such as `reasoning` or
+`reasoning_content`, the adapter maps them to Anthropic-compatible `thinking`
+blocks so Claude Code can display them. These blocks are display compatibility
+only: the adapter does not generate fake Anthropic `signature` or
+`signature_delta` fields.
+
+## Model-Family Notes
+
+- OpenAI Chat-compatible model families:
+  - Streaming requests always send `stream_options.include_usage = true`.
+  - `o*` and `gpt-5*` requests use `max_completion_tokens`.
+  - OpenAI reasoning models can map Anthropic `thinking` / `output_config.effort`
+    to `reasoning_effort`; `effort: "max"` maps to OpenAI `xhigh`.
+- GLM-5:
+  - `glm-5*` forwards Anthropic thinking controls as GLM `thinking`.
+  - `glm-5.2*` can additionally receive GLM `reasoning_effort`.
+  - Tool streaming is enabled automatically for streaming tool calls.
+- Qwen3 / Qwen3.6:
+  - Anthropic thinking requests are forwarded through `enable_thinking=true`.
+  - In this adapter path, Qwen thinking requires `stream: true`.
+- Generic OpenAI-compatible models:
+  - The adapter does not send GLM/Qwen private fields unless the model name
+    matches those model families.
 
 ---
 
@@ -71,6 +110,7 @@ Server-Sent Events (SSE) with the following event types:
 Health check endpoint.
 
 **Response:**
+
 ```json
 {
   "status": "ok",
@@ -93,6 +133,7 @@ const openaiRequest = convertRequestToOpenAI(anthropicRequest, 'gpt-4');
 ```
 
 **Parameters:**
+
 - `anthropicRequest: AnthropicMessageRequest` - The incoming request
 - `targetModel: string` - The OpenAI model to use
 
@@ -111,6 +152,7 @@ const anthropicResponse = convertResponseToAnthropic(openaiResponse, 'claude-4-o
 ```
 
 **Parameters:**
+
 - `openaiResponse: OpenAIChatResponse` - The OpenAI response
 - `originalModelRequested: string` - Model name to include in response
 
@@ -144,14 +186,14 @@ All errors follow Anthropic's error format:
 ```
 
 **Error Types:**
-| Status Code | Error Type              |
+| Status Code | Error Type |
 | ----------- | ----------------------- |
-| 400         | `invalid_request_error` |
-| 401         | `authentication_error`  |
-| 403         | `permission_error`      |
-| 404         | `not_found_error`       |
-| 429         | `rate_limit_error`      |
-| 500         | `api_error`             |
+| 400 | `invalid_request_error` |
+| 401 | `authentication_error` |
+| 403 | `permission_error` |
+| 404 | `not_found_error` |
+| 429 | `rate_limit_error` |
+| 500 | `api_error` |
 
 ---
 
@@ -159,12 +201,12 @@ All errors follow Anthropic's error format:
 
 ```typescript
 interface AdapterConfig {
-  baseUrl: string;    // OpenAI-compatible API base URL
-  apiKey: string;     // API key for authentication
+  baseUrl: string; // OpenAI-compatible API base URL
+  apiKey: string; // API key for authentication
   models: {
-    opus: string;     // Model for Claude Opus requests
-    sonnet: string;   // Model for Claude Sonnet requests
-    haiku: string;    // Model for Claude Haiku requests
+    opus: string; // Model for Claude Opus requests
+    sonnet: string; // Model for Claude Sonnet requests
+    haiku: string; // Model for Claude Haiku requests
   };
   upstreamHeaders?: Record<string, string>; // Default headers sent to the upstream OpenAI-compatible API
 }

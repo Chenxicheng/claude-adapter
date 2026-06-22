@@ -105,6 +105,24 @@ describe('Token Usage Utilities', () => {
       expect(content).toContain('50');
     });
 
+    it('should handle optional cache creation tokens', async () => {
+      const usage = {
+        provider: 'https://api.example.com',
+        modelName: 'cache-create-model',
+        inputTokens: 200,
+        outputTokens: 100,
+        cacheCreationInputTokens: 25,
+        streaming: false,
+        usageStatus: 'complete' as const,
+      };
+
+      recordUsage(usage);
+      await flushJsonLineWrites();
+
+      const record = readLastUsageRecord();
+      expect(record.cacheCreationInputTokens).toBe(25);
+    });
+
     it('should handle optional model field', async () => {
       const usage = {
         provider: 'https://api.example.com',

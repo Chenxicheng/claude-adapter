@@ -467,7 +467,7 @@ describe('Streaming Converter', () => {
       const events = mockRaw.getEvents();
       const messageDelta = events.find((e) => e.data.type === 'message_delta');
 
-      expect(messageDelta!.data.usage.input_tokens).toBe(500);
+      expect(messageDelta!.data.usage.input_tokens).toBe(100);
       expect(messageDelta!.data.usage.output_tokens).toBe(10);
       expect(messageDelta!.data.usage.cache_read_input_tokens).toBe(400);
     });
@@ -494,6 +494,182 @@ describe('Streaming Converter', () => {
       const messageDelta = events.find((e) => e.data.type === 'message_delta');
 
       expect(messageDelta!.data.usage).toHaveProperty('cache_read_input_tokens', 0);
+    });
+
+    it('should include cache creation tokens in streaming usage events and records', async () => {
+      const mockRaw = new MockRawResponse();
+      const mockReply = { raw: mockRaw } as any;
+      const recordUsage = require('../src/utils/tokenUsage').recordUsage;
+
+      const stream = createMockStream([
+        { choices: [{ delta: { content: 'Warm the cache' }, finish_reason: null }] },
+        {
+          choices: [],
+          usage: {
+            prompt_tokens: 120,
+            completion_tokens: 12,
+            cache_read_input_tokens: 80,
+            cache_creation_input_tokens: 20,
+          },
+        },
+      ]);
+
+      await streamOpenAIToAnthropic(stream as any, mockReply, 'claude-4-opus');
+
+      const events = mockRaw.getEvents();
+      const messageDelta = events.find((e) => e.data.type === 'message_delta');
+
+      expect(messageDelta!.data.usage.input_tokens).toBe(20);
+      expect(messageDelta!.data.usage.cache_read_input_tokens).toBe(80);
+      expect(messageDelta!.data.usage.cache_creation_input_tokens).toBe(20);
+      expect(recordUsage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          inputTokens: 20,
+          cachedInputTokens: 80,
+          cacheCreationInputTokens: 20,
+        })
+      );
+    });
+
+    it('should convert vendor reasoning chunks to Anthropic thinking deltas', async () => {
+      const mockRaw = new MockRawResponse();
+      const mockReply = { raw: mockRaw } as any;
+
+      const stream = createMockStream([
+        {
+          choices: [
+            { delta: { reasoning_content: 'Need to inspect the codebase.' }, finish_reason: null },
+          ],
+        },
+        { choices: [{ delta: { content: 'Done.' }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]);
+
+      await streamOpenAIToAnthropic(stream as any, mockReply, 'claude-4-opus');
+
+      const events = mockRaw.getEvents();
+      expect(events[0].data.type).toBe('message_start');
+      const thinkingStart = events.find(
+        (e) => e.data.type === 'content_block_start' && e.data.content_block?.type === 'thinking'
+      );
+      const thinkingDelta = events.find(
+        (e) => e.data.type === 'content_block_delta' && e.data.delta?.type === 'thinking_delta'
+      );
+      const textStart = events.find(
+        (e) => e.data.type === 'content_block_start' && e.data.content_block?.type === 'text'
+      );
+
+      expect(thinkingStart).toBeDefined();
+      expect(thinkingStart!.data.content_block).not.toHaveProperty('signature');
+      expect(thinkingDelta!.data.delta.thinking).toBe('Need to inspect the codebase.');
+      expect(textStart).toBeDefined();
+      expect(events.filter((e) => e.data.type === 'content_block_stop').map((e) => e.data.index)).toEqual([
+        0,
+        1,
+      ]);
+    });
+
+    it('should close thinking before streaming text and tool-use blocks', async () => {
+      const mockRaw = new MockRawResponse();
+      const mockReply = { raw: mockRaw } as any;
+
+      const stream = createMockStream([
+        { choices: [{ delta: { reasoning: 'Need to call the helper.' }, finish_reason: null }] },
+        { choices: [{ delta: { content: 'I will call a helper.' }, finish_reason: null }] },
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'call_helper',
+                    function: { name: 'helper', arguments: '{"ok":true}' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        },
+        { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+      ]);
+
+      await streamOpenAIToAnthropic(stream as any, mockReply, 'claude-4-opus');
+
+      const events = mockRaw.getEvents();
+      const blockStarts = events.filter((e) => e.data.type === 'content_block_start');
+      const blockStops = events.filter((e) => e.data.type === 'content_block_stop');
+
+      expect(blockStarts.map((e) => e.data.content_block.type)).toEqual([
+        'thinking',
+        'text',
+        'tool_use',
+      ]);
+      expect(blockStarts.map((e) => e.data.index)).toEqual([0, 1, 2]);
+      expect(blockStops.map((e) => e.data.index)).toEqual([0, 1, 2]);
+    });
+
+    it('should ignore reasoning chunks after tool streaming has started', async () => {
+      const mockRaw = new MockRawResponse();
+      const mockReply = { raw: mockRaw } as any;
+
+      const stream = createMockStream([
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'call_after_reasoning',
+                    function: { name: 'helper', arguments: '{"a":' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        },
+        {
+          choices: [
+            { delta: { reasoning_content: 'Late reasoning should not open a block.' }, finish_reason: null },
+          ],
+        },
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    function: { arguments: '1}' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        },
+        { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+      ]);
+
+      await streamOpenAIToAnthropic(stream as any, mockReply, 'claude-4-opus');
+
+      const events = mockRaw.getEvents();
+      const thinkingStarts = events.filter(
+        (e) => e.data.type === 'content_block_start' && e.data.content_block?.type === 'thinking'
+      );
+      const toolStarts = events.filter(
+        (e) => e.data.type === 'content_block_start' && e.data.content_block?.type === 'tool_use'
+      );
+      const jsonDeltas = events.filter(
+        (e) => e.data.type === 'content_block_delta' && e.data.delta?.type === 'input_json_delta'
+      );
+
+      expect(thinkingStarts).toHaveLength(0);
+      expect(toolStarts).toHaveLength(1);
+      expect(jsonDeltas.map((e) => e.data.delta.partial_json).join('')).toBe('{"a":1}');
     });
 
     it('should handle stream errors gracefully', async () => {

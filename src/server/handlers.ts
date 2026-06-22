@@ -4,9 +4,10 @@ import OpenAI from 'openai';
 import { AnthropicMessageRequest } from '../types/anthropic';
 import { AdapterConfig } from '../types/config';
 import { convertRequestToOpenAI } from '../converters/request';
-import { isAzureOpenAIEndpoint } from '../utils/provider';
+import { isAzureOpenAIEndpoint } from '../utils/endpoint';
 import { convertResponseToAnthropic, createErrorResponse } from '../converters/response';
 import { streamOpenAIToAnthropic } from '../converters/streaming';
+import { normalizeAnthropicUsageFromOpenAI } from '../converters/usage';
 import { validateAnthropicRequest, formatValidationErrors } from '../utils/validation';
 import { logger, RequestLogger } from '../utils/logger';
 import { recordUsage } from '../utils/tokenUsage';
@@ -26,7 +27,7 @@ function generateRequestId(): string {
  * Handle POST /v1/messages requests
  */
 export function createMessagesHandler(config: AdapterConfig) {
-  const isAzure = isAzureOpenAIEndpoint(config.baseUrl);
+  const isAzureEndpoint = isAzureOpenAIEndpoint(config.baseUrl);
   const openai = new OpenAI({
     baseURL: config.baseUrl,
     apiKey: config.apiKey,
@@ -58,7 +59,7 @@ export function createMessagesHandler(config: AdapterConfig) {
       log.info(`→ ${targetModel} [sent]`);
 
       // Convert request to OpenAI format
-      const openaiRequest = convertRequestToOpenAI(anthropicRequest, targetModel, isAzure);
+      const openaiRequest = convertRequestToOpenAI(anthropicRequest, targetModel, isAzureEndpoint);
 
       if (isStreaming) {
         await handleStreamingRequest(
@@ -118,13 +119,19 @@ async function handleNonStreamingRequest(
 
   // Record token usage
   if (response.usage) {
+    const normalizedUsage = normalizeAnthropicUsageFromOpenAI(response.usage);
     recordUsage({
       provider,
       modelName: originalModel,
       model: response.model,
-      inputTokens: response.usage.prompt_tokens,
-      outputTokens: response.usage.completion_tokens,
-      cachedInputTokens: response.usage.prompt_tokens_details?.cached_tokens,
+      inputTokens: normalizedUsage.inputTokens,
+      outputTokens: normalizedUsage.outputTokens,
+      ...(normalizedUsage.cacheReadInputTokens !== undefined
+        ? { cachedInputTokens: normalizedUsage.cacheReadInputTokens }
+        : {}),
+      ...(normalizedUsage.cacheCreationInputTokens !== undefined
+        ? { cacheCreationInputTokens: normalizedUsage.cacheCreationInputTokens }
+        : {}),
       streaming: false,
       usageStatus: 'complete',
     });

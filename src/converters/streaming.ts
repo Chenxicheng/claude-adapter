@@ -58,6 +58,7 @@ interface StreamingState extends StreamUsageState {
   hasStarted: boolean;
   textContent: string;
   textBlockOpen: boolean;
+  thinkingBlockOpen: boolean;
 }
 
 /**
@@ -82,6 +83,7 @@ export async function streamOpenAIToAnthropic(
     hasStarted: false,
     textContent: '',
     textBlockOpen: false,
+    thinkingBlockOpen: false,
   };
 
   // Access the underlying Node.js response for SSE streaming
@@ -127,8 +129,21 @@ function processChunk(chunk: OpenAIStreamChunk, state: StreamingState, raw: any)
 
   const delta = choice.delta;
 
+  const reasoning = delta.reasoning_content || delta.reasoning;
+  if (reasoning && state.currentToolCalls.size === 0) {
+    if (!state.thinkingBlockOpen) {
+      closeTextBlock(state, raw);
+      sendContentBlockStart(state.contentBlockIndex, 'thinking', '', raw);
+      state.thinkingBlockOpen = true;
+    }
+
+    sendThinkingDelta(state.contentBlockIndex, reasoning, raw);
+  }
+
   // Handle text content
   if (delta.content) {
+    closeThinkingBlock(state, raw);
+
     if (!state.textBlockOpen) {
       sendContentBlockStart(state.contentBlockIndex, 'text', '', raw);
       state.textBlockOpen = true;
@@ -147,12 +162,8 @@ function processChunk(chunk: OpenAIStreamChunk, state: StreamingState, raw: any)
 
   // Handle finish reason
   if (choice.finish_reason) {
-    if (state.textBlockOpen) {
-      sendContentBlockStop(state.contentBlockIndex, raw);
-      state.textBlockOpen = false;
-      state.textContent = '';
-      state.contentBlockIndex++;
-    }
+    closeThinkingBlock(state, raw);
+    closeTextBlock(state, raw);
 
     for (const toolCall of state.currentToolCalls.values()) {
       sendContentBlockStop(toolCall.blockIndex, raw);
@@ -169,12 +180,8 @@ function processToolCallDelta(
 
   // Check if this is a new tool call
   if (!state.currentToolCalls.has(index)) {
-    if (state.textBlockOpen) {
-      sendContentBlockStop(state.contentBlockIndex, raw);
-      state.textBlockOpen = false;
-      state.textContent = '';
-      state.contentBlockIndex++;
-    }
+    closeThinkingBlock(state, raw);
+    closeTextBlock(state, raw);
 
     // IMPORTANT: Use the original OpenAI tool ID to maintain consistency
     // This ID must match when tool results are sent back
@@ -212,6 +219,27 @@ function processToolCallDelta(
   }
 }
 
+function closeThinkingBlock(state: StreamingState, raw: any): void {
+  if (!state.thinkingBlockOpen) {
+    return;
+  }
+
+  sendContentBlockStop(state.contentBlockIndex, raw);
+  state.thinkingBlockOpen = false;
+  state.contentBlockIndex++;
+}
+
+function closeTextBlock(state: StreamingState, raw: any): void {
+  if (!state.textBlockOpen) {
+    return;
+  }
+
+  sendContentBlockStop(state.contentBlockIndex, raw);
+  state.textBlockOpen = false;
+  state.textContent = '';
+  state.contentBlockIndex++;
+}
+
 function sendMessageStart(state: StreamingState, raw: any): void {
   const event = {
     type: 'message_start',
@@ -231,7 +259,7 @@ function sendMessageStart(state: StreamingState, raw: any): void {
 
 function sendContentBlockStart(
   index: number,
-  type: 'text' | 'tool_use',
+  type: 'text' | 'thinking' | 'tool_use',
   textOrName: string,
   raw: any,
   id?: string
@@ -240,6 +268,8 @@ function sendContentBlockStart(
 
   if (type === 'text') {
     contentBlock = { type: 'text', text: '' };
+  } else if (type === 'thinking') {
+    contentBlock = { type: 'thinking', thinking: '' };
   } else {
     contentBlock = {
       type: 'tool_use',
@@ -253,6 +283,18 @@ function sendContentBlockStart(
     type: 'content_block_start',
     index,
     content_block: contentBlock,
+  };
+  sendSSE(event, raw);
+}
+
+function sendThinkingDelta(index: number, thinking: string, raw: any): void {
+  const event = {
+    type: 'content_block_delta',
+    index,
+    delta: {
+      type: 'thinking_delta',
+      thinking,
+    },
   };
   sendSSE(event, raw);
 }
@@ -290,6 +332,9 @@ function sendContentBlockStop(index: number, raw: any): void {
 }
 
 function finishStream(state: StreamingState, raw: any): void {
+  closeThinkingBlock(state, raw);
+  closeTextBlock(state, raw);
+
   // Determine stop reason
   const hasToolCalls = state.currentToolCalls.size > 0;
   const stopReason = hasToolCalls ? 'tool_use' : 'end_turn';
