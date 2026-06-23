@@ -3,13 +3,6 @@ import { convertRequestToOpenAI } from '../src/converters/request';
 import { AnthropicMessageRequest } from '../src/types/anthropic';
 import { isAzureOpenAIEndpoint } from '../src/utils/endpoint';
 
-// Mock update utility
-jest.mock('../src/utils/update', () => ({
-  getCachedUpdateInfo: jest.fn().mockReturnValue(null), // Default no update
-}));
-
-import { getCachedUpdateInfo } from '../src/utils/update';
-
 describe('Request Converter', () => {
   describe('convertRequestToOpenAI', () => {
     it('should convert a simple text message', () => {
@@ -920,8 +913,8 @@ describe('Request Converter', () => {
     });
   });
 
-  describe('Claude Code system prompt modification', () => {
-    it('should replace Claude Code identifier with Claude Adapter branding', () => {
+  describe('Claude Code system prompt preservation', () => {
+    it('should preserve Claude Code system prompt text verbatim', () => {
       const anthropicRequest: AnthropicMessageRequest = {
         model: 'claude-4.5-sonnet',
         max_tokens: 1024,
@@ -933,13 +926,9 @@ describe('Request Converter', () => {
       const result = convertRequestToOpenAI(anthropicRequest, 'gpt-4');
 
       expect(result.messages[0].role).toBe('system');
-      expect(result.messages[0].content).toContain('Claude Adapter');
-      expect(result.messages[0].content).toContain(
-        'https://github.com/shantoislamdev/claude-adapter'
+      expect(result.messages[0].content).toBe(
+        "You are Claude Code, Anthropic's official CLI for Claude. Here are more instructions."
       );
-      expect(result.messages[0].content).toContain('https://claude-adapter.pages.dev/');
-      expect(result.messages[0].content).toContain('Here are more instructions.');
-      expect(result.messages[0].content).not.toContain("Anthropic's official CLI");
     });
 
     it('should preserve system prompts that do not contain Claude Code identifier', () => {
@@ -956,7 +945,7 @@ describe('Request Converter', () => {
       expect(result.messages[0].content).toBe('You are a helpful coding assistant.');
     });
 
-    it('should handle system prompt as array with Claude Code identifier', () => {
+    it('should concatenate system prompt arrays without branding injection', () => {
       const anthropicRequest: AnthropicMessageRequest = {
         model: 'claude-4.5-sonnet',
         max_tokens: 1024,
@@ -970,27 +959,9 @@ describe('Request Converter', () => {
       const result = convertRequestToOpenAI(anthropicRequest, 'gpt-4');
 
       expect(result.messages[0].role).toBe('system');
-      expect(result.messages[0].content).toContain('Claude Adapter');
-      expect(result.messages[0].content).toContain('Additional context here.');
-    });
-    it('should append update notification when update is available', () => {
-      const mockUpdateInfo = { hasUpdate: true, current: '2.0.0', latest: '2.1.0' };
-      (getCachedUpdateInfo as jest.Mock).mockReturnValue(mockUpdateInfo);
-
-      const anthropicRequest: AnthropicMessageRequest = {
-        model: 'claude-4.5-sonnet',
-        max_tokens: 1024,
-        system: "You are Claude Code, Anthropic's official CLI for Claude.",
-        messages: [{ role: 'user', content: 'Hello' }],
-      };
-
-      const result = convertRequestToOpenAI(anthropicRequest, 'gpt-4');
-
-      expect(result.messages[0].content).toContain(
-        'IMPORTANT: A new version of Claude Adapter is available'
+      expect(result.messages[0].content).toBe(
+        "You are Claude Code, Anthropic's official CLI for Claude.\nAdditional context here."
       );
-      expect(result.messages[0].content).toContain('(2.0.0 → 2.1.0)');
-      expect(result.messages[0].content).toContain('npm i -g claude-adapter');
     });
   });
 });
