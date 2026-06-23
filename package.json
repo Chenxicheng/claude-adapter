@@ -1,6 +1,6 @@
 {
   "name": "claude-adapter",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Proxy to convert Anthropic API requests to OpenAI format for Claude Code",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,13 +9,15 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:release": "npm run build && npm run obfuscate:dist",
     "start": "node dist/cli.js",
     "dev": "npx ts-node src/cli.ts",
     "test": "jest",
     "lint": "eslint src/**/*.ts tests/**/*.ts",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "obfuscate:dist": "node scripts/obfuscate-dist.mjs",
     "release:assets": "node scripts/build-release-assets.mjs",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm test && npm run build:release"
   },
   "files": [
     "dist",
@@ -63,6 +65,7 @@
     "@typescript-eslint/eslint-plugin": "^8.18.0",
     "@typescript-eslint/parser": "^8.18.0",
     "eslint": "^9.17.0",
+    "javascript-obfuscator": "^5.4.3",
     "jest": "^29.7.0",
     "prettier": "^3.4.2",
     "ts-jest": "^29.2.5",

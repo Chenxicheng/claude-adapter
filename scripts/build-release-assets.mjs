@@ -102,7 +102,7 @@ function createSourceArchive() {
 }
 
 resetBuildDirs();
-run('npm', ['run', 'build']);
+run('npm', ['run', 'build:release']);
 createStagingPackage();
 createPackAsset();
 createSourceArchive();
