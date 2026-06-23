@@ -94,9 +94,9 @@ describe('Response Converter', () => {
       expect(result.usage.cache_read_input_tokens).toBe(800);
     });
 
-    it('should map cache creation tokens and subtract them from fresh input tokens', () => {
+    it('should preserve explicit zero cached tokens', () => {
       const openaiResponse: OpenAIChatResponse = {
-        id: 'chatcmpl-cache-create',
+        id: 'chatcmpl-zero-cache',
         object: 'chat.completion',
         created: 1677652288,
         model: 'gpt-4o',
@@ -108,18 +108,47 @@ describe('Response Converter', () => {
           },
         ],
         usage: {
-          prompt_tokens: 1200,
+          prompt_tokens: 100,
           completion_tokens: 50,
-          total_tokens: 1250,
-          cache_read_input_tokens: 900,
-          cache_creation_input_tokens: 100,
+          total_tokens: 150,
+          prompt_tokens_details: {
+            cached_tokens: 0,
+          },
         },
       };
 
       const result = convertResponseToAnthropic(openaiResponse, 'claude-4-sonnet');
-      expect(result.usage.input_tokens).toBe(200);
-      expect(result.usage.cache_read_input_tokens).toBe(900);
-      expect(result.usage.cache_creation_input_tokens).toBe(100);
+      expect(result.usage.input_tokens).toBe(100);
+      expect(result.usage.cache_read_input_tokens).toBe(0);
+      expect(result.usage.cache_creation_input_tokens).toBeUndefined();
+    });
+
+    it('should not subtract reasoning tokens from output tokens', () => {
+      const openaiResponse: OpenAIChatResponse = {
+        id: 'chatcmpl-reasoning',
+        object: 'chat.completion',
+        created: 1677652288,
+        model: 'gpt-5',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'Hello!' },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: {
+          prompt_tokens: 30,
+          completion_tokens: 20,
+          total_tokens: 50,
+          completion_tokens_details: {
+            reasoning_tokens: 12,
+          },
+        },
+      };
+
+      const result = convertResponseToAnthropic(openaiResponse, 'claude-4-sonnet');
+      expect(result.usage.input_tokens).toBe(30);
+      expect(result.usage.output_tokens).toBe(20);
     });
 
     it('should handle missing prompt_tokens_details gracefully', () => {

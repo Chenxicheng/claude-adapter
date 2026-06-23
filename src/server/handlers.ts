@@ -129,9 +129,6 @@ async function handleNonStreamingRequest(
       ...(normalizedUsage.cacheReadInputTokens !== undefined
         ? { cachedInputTokens: normalizedUsage.cacheReadInputTokens }
         : {}),
-      ...(normalizedUsage.cacheCreationInputTokens !== undefined
-        ? { cacheCreationInputTokens: normalizedUsage.cacheCreationInputTokens }
-        : {}),
       streaming: false,
       usageStatus: 'complete',
     });

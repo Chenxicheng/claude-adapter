@@ -13,17 +13,21 @@ Official references:
 
 ## Usage Mapping
 
-| OpenAI final usage field              | Anthropic usage field         |
-| ------------------------------------- | ----------------------------- |
-| `prompt_tokens - cache*`              | `input_tokens`                |
-| `completion_tokens`                   | `output_tokens`               |
-| `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens`     |
-| `cache_creation_input_tokens`         | `cache_creation_input_tokens` |
+| OpenAI final usage field              | Anthropic usage field     |
+| ------------------------------------- | ------------------------- |
+| `prompt_tokens - cached_tokens`       | `input_tokens`            |
+| `completion_tokens`                   | `output_tokens`           |
+| `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens` |
 
 ## Acceptance Goals
 
 - Native stream maps upstream prompt usage to Anthropic fresh-input semantics:
-  `input_tokens = prompt_tokens - cache_read_input_tokens - cache_creation_input_tokens`.
+  `input_tokens = prompt_tokens - cache_read_input_tokens`.
+- Native OpenAI Chat Completions usage does not include Anthropic
+  `cache_creation_input_tokens`, so the adapter must not infer cache creation
+  tokens from OpenAI usage.
+- OpenAI `completion_tokens_details.reasoning_tokens` is a breakdown within
+  `completion_tokens`; it must not be subtracted from Anthropic `output_tokens`.
 - If no upstream usage chunk arrives, final `message_delta.usage` must not emit a synthetic `input_tokens: 0`.
 - `message_start` remains the first event and is not delayed waiting for final usage.
 - `message_start.message.usage` remains a transport compatibility placeholder and is not recorded.
@@ -59,22 +63,27 @@ Native stream must satisfy:
 - `message_delta.usage.cache_read_input_tokens === 8`
 - `message_start` is still the first event
 
-When an upstream returns direct cache creation fields, the adapter must also preserve them:
+OpenAI completion usage breakdown must not reduce Anthropic output tokens:
 
 ```json
 {
   "prompt_tokens": 120,
   "completion_tokens": 12,
-  "cache_read_input_tokens": 80,
-  "cache_creation_input_tokens": 20
+  "prompt_tokens_details": {
+    "cached_tokens": 80
+  },
+  "completion_tokens_details": {
+    "reasoning_tokens": 7
+  }
 }
 ```
 
 Native stream must then satisfy:
 
-- `message_delta.usage.input_tokens === 20`
+- `message_delta.usage.input_tokens === 40`
+- `message_delta.usage.output_tokens === 12`
 - `message_delta.usage.cache_read_input_tokens === 80`
-- `message_delta.usage.cache_creation_input_tokens === 20`
+- `message_delta.usage.cache_creation_input_tokens === undefined`
 
 Native stream must also omit `message_delta.usage.input_tokens` when no upstream usage chunk arrives, while preserving a real upstream `prompt_tokens: 0`.
 

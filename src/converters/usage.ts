@@ -6,7 +6,6 @@ interface NormalizedUsage {
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
 }
 
 interface MessageDeltaUsage {
@@ -20,17 +19,12 @@ export interface StreamUsageState {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
-  cacheCreationInputTokens?: number;
   usageReceived: boolean;
 }
 
 export function getCacheReadInputTokens(usage?: OpenAIUsage): number | undefined {
   if (!usage) {
     return undefined;
-  }
-
-  if (usage.cache_read_input_tokens !== undefined) {
-    return usage.cache_read_input_tokens;
   }
 
   return usage.prompt_tokens_details?.cached_tokens;
@@ -40,17 +34,13 @@ export function normalizeAnthropicUsageFromOpenAI(usage?: OpenAIUsage): Normaliz
   const promptTokens = usage?.prompt_tokens ?? 0;
   const outputTokens = usage?.completion_tokens ?? 0;
   const cacheReadInputTokens = getCacheReadInputTokens(usage);
-  const cacheCreationInputTokens = usage?.cache_creation_input_tokens;
-  const inputTokens = Math.max(
-    0,
-    promptTokens - (cacheReadInputTokens ?? 0) - (cacheCreationInputTokens ?? 0)
-  );
+  const inputTokens = Math.max(0, promptTokens - (cacheReadInputTokens ?? 0));
 
   const normalized: NormalizedUsage = {
     inputTokens,
     outputTokens,
   };
-  applyNormalizedCacheFields(normalized, cacheReadInputTokens, cacheCreationInputTokens);
+  applyNormalizedCacheFields(normalized, cacheReadInputTokens);
   return normalized;
 }
 
@@ -71,7 +61,6 @@ export function applyOpenAIUsage(state: StreamUsageState, usage: OpenAIUsage): v
   state.inputTokens = normalized.inputTokens;
   state.outputTokens = normalized.outputTokens;
   state.cachedInputTokens = normalized.cacheReadInputTokens;
-  state.cacheCreationInputTokens = normalized.cacheCreationInputTokens;
   state.usageReceived = true;
 }
 
@@ -96,7 +85,6 @@ export function buildMessageDeltaUsage(state: StreamUsageState): MessageDeltaUsa
     inputTokens: state.inputTokens,
     outputTokens: state.outputTokens,
     cacheReadInputTokens: state.cachedInputTokens,
-    cacheCreationInputTokens: state.cacheCreationInputTokens,
   });
   return usage;
 }
@@ -130,14 +118,10 @@ export function buildStreamUsageRecord(args: {
 
 function applyNormalizedCacheFields(
   usage: NormalizedUsage,
-  cacheReadInputTokens: number | undefined,
-  cacheCreationInputTokens: number | undefined
+  cacheReadInputTokens: number | undefined
 ): void {
   if (cacheReadInputTokens !== undefined) {
     usage.cacheReadInputTokens = cacheReadInputTokens;
-  }
-  if (cacheCreationInputTokens !== undefined) {
-    usage.cacheCreationInputTokens = cacheCreationInputTokens;
   }
 }
 
@@ -148,9 +132,6 @@ function applyAnthropicCacheFields(
   if (normalized.cacheReadInputTokens !== undefined) {
     usage.cache_read_input_tokens = normalized.cacheReadInputTokens;
   }
-  if (normalized.cacheCreationInputTokens !== undefined) {
-    usage.cache_creation_input_tokens = normalized.cacheCreationInputTokens;
-  }
 }
 
 function applyRecordCacheFields(
@@ -159,8 +140,5 @@ function applyRecordCacheFields(
 ): void {
   if (state.cachedInputTokens !== undefined) {
     record.cachedInputTokens = state.cachedInputTokens;
-  }
-  if (state.cacheCreationInputTokens !== undefined) {
-    record.cacheCreationInputTokens = state.cacheCreationInputTokens;
   }
 }

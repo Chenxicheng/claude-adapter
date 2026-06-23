@@ -311,8 +311,7 @@ describe('Error Response Handling', () => {
         usage: {
           prompt_tokens: 100,
           completion_tokens: 10,
-          cache_read_input_tokens: 60,
-          cache_creation_input_tokens: 20,
+          prompt_tokens_details: { cached_tokens: 60 },
         },
         model: 'gpt-4',
       });
@@ -321,9 +320,8 @@ describe('Error Response Handling', () => {
 
       expect(recordUsage).toHaveBeenCalledWith(
         expect.objectContaining({
-          inputTokens: 20,
+          inputTokens: 40,
           cachedInputTokens: 60,
-          cacheCreationInputTokens: 20,
         })
       );
     });

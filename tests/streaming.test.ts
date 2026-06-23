@@ -496,7 +496,7 @@ describe('Streaming Converter', () => {
       expect(messageDelta!.data.usage).toHaveProperty('cache_read_input_tokens', 0);
     });
 
-    it('should include cache creation tokens in streaming usage events and records', async () => {
+    it('should not subtract reasoning tokens from streaming output tokens', async () => {
       const mockRaw = new MockRawResponse();
       const mockReply = { raw: mockRaw } as any;
       const recordUsage = require('../src/utils/tokenUsage').recordUsage;
@@ -508,8 +508,8 @@ describe('Streaming Converter', () => {
           usage: {
             prompt_tokens: 120,
             completion_tokens: 12,
-            cache_read_input_tokens: 80,
-            cache_creation_input_tokens: 20,
+            prompt_tokens_details: { cached_tokens: 80 },
+            completion_tokens_details: { reasoning_tokens: 7 },
           },
         },
       ]);
@@ -519,14 +519,15 @@ describe('Streaming Converter', () => {
       const events = mockRaw.getEvents();
       const messageDelta = events.find((e) => e.data.type === 'message_delta');
 
-      expect(messageDelta!.data.usage.input_tokens).toBe(20);
+      expect(messageDelta!.data.usage.input_tokens).toBe(40);
+      expect(messageDelta!.data.usage.output_tokens).toBe(12);
       expect(messageDelta!.data.usage.cache_read_input_tokens).toBe(80);
-      expect(messageDelta!.data.usage.cache_creation_input_tokens).toBe(20);
+      expect(messageDelta!.data.usage.cache_creation_input_tokens).toBeUndefined();
       expect(recordUsage).toHaveBeenCalledWith(
         expect.objectContaining({
-          inputTokens: 20,
+          inputTokens: 40,
+          outputTokens: 12,
           cachedInputTokens: 80,
-          cacheCreationInputTokens: 20,
         })
       );
     });
@@ -563,10 +564,9 @@ describe('Streaming Converter', () => {
       expect(thinkingStart!.data.content_block).not.toHaveProperty('signature');
       expect(thinkingDelta!.data.delta.thinking).toBe('Need to inspect the codebase.');
       expect(textStart).toBeDefined();
-      expect(events.filter((e) => e.data.type === 'content_block_stop').map((e) => e.data.index)).toEqual([
-        0,
-        1,
-      ]);
+      expect(
+        events.filter((e) => e.data.type === 'content_block_stop').map((e) => e.data.index)
+      ).toEqual([0, 1]);
     });
 
     it('should close thinking before streaming text and tool-use blocks', async () => {
@@ -633,7 +633,10 @@ describe('Streaming Converter', () => {
         },
         {
           choices: [
-            { delta: { reasoning_content: 'Late reasoning should not open a block.' }, finish_reason: null },
+            {
+              delta: { reasoning_content: 'Late reasoning should not open a block.' },
+              finish_reason: null,
+            },
           ],
         },
         {
