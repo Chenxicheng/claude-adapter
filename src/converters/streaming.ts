@@ -54,7 +54,6 @@ interface StreamingState extends StreamUsageState {
     {
       id: string;
       name: string;
-      arguments: string;
       blockIndex: number;
     }
   >;
@@ -109,8 +108,8 @@ export async function streamOpenAIToAnthropic(
 }
 
 function processChunk(chunk: OpenAIStreamChunk, state: StreamingState, raw: RawReply): void {
-  // Update usage if present
-  if (chunk.usage) {
+  // Update usage only when the chunk carries real token counters.
+  if (hasOpenAIUsageData(chunk.usage)) {
     applyOpenAIUsage(state, chunk.usage);
   }
 
@@ -198,7 +197,6 @@ function processToolCallDelta(
     const newToolCall = {
       id: toolId,
       name: toolCall.function?.name || '',
-      arguments: '',
       blockIndex,
     };
     state.currentToolCalls.set(index, newToolCall);
@@ -213,9 +211,9 @@ function processToolCallDelta(
     currentCall.name = toolCall.function.name;
   }
 
-  if (toolCall.function?.arguments) {
-    currentCall.arguments += toolCall.function.arguments;
-    sendInputJsonDelta(currentCall.blockIndex, toolCall.function.arguments, raw);
+  const argumentDelta = toolCall.function?.arguments;
+  if (argumentDelta) {
+    sendInputJsonDelta(currentCall.blockIndex, argumentDelta, raw);
   }
 }
 
@@ -396,6 +394,11 @@ function sendErrorEvent(error: Error, state: StreamingState, raw: RawReply): voi
 }
 
 function sendSSE(data: SSEEvent, raw: RawReply): void {
-  raw.write(`event: ${data.type}\n`);
-  raw.write(`data: ${JSON.stringify(data)}\n\n`);
+  raw.write(`event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+function hasOpenAIUsageData(
+  usage: OpenAIStreamChunk['usage']
+): usage is NonNullable<OpenAIStreamChunk['usage']> {
+  return usage?.prompt_tokens !== undefined || usage?.completion_tokens !== undefined;
 }

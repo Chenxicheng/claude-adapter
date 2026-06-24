@@ -29,6 +29,7 @@ Official references:
 - OpenAI `completion_tokens_details.reasoning_tokens` is a breakdown within
   `completion_tokens`; it must not be subtracted from Anthropic `output_tokens`.
 - If no upstream usage chunk arrives, final `message_delta.usage` must not emit a synthetic `input_tokens: 0`.
+- If the final upstream usage chunk reports `prompt_tokens: 0`, final `message_delta.usage` must preserve the real `input_tokens: 0`.
 - `message_start` remains the first event and is not delayed waiting for final usage.
 - `message_start.message.usage` remains a transport compatibility placeholder and is not recorded.
 - Streaming usage is recorded once at stream end with `usageStatus: "complete"` or `usageStatus: "missing_final_chunk"`.
@@ -93,6 +94,7 @@ Usage recording must satisfy:
 - Stream responses record usage only once, after the stream ends.
 - Stream responses with final usage record `usageStatus: "complete"` with real usage fields.
 - Stream responses without final usage record `usageStatus: "missing_final_chunk"` and omit unknown token fields.
+- OpenAI usage records must not include `cacheCreationInputTokens`; native Chat Completions usage does not report cache creation tokens.
 - `message_start.message.usage` placeholder values are never persisted as token usage.
 
 Reasoning trace compatibility must satisfy:

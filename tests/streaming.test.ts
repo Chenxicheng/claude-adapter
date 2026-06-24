@@ -30,14 +30,25 @@ class MockRawResponse {
 
   getEvents(): Array<{ event: string; data: any }> {
     const events: Array<{ event: string; data: any }> = [];
-    let currentEvent = '';
+    const frames = this.chunks.join('').split('\n\n');
 
-    for (const chunk of this.chunks) {
-      if (chunk.startsWith('event: ')) {
-        currentEvent = chunk.slice(7).trim();
-      } else if (chunk.startsWith('data: ')) {
-        const data = JSON.parse(chunk.slice(6).trim());
-        events.push({ event: currentEvent, data });
+    for (const frame of frames) {
+      if (!frame.trim()) {
+        continue;
+      }
+
+      let currentEvent = '';
+      let currentData = '';
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7).trim();
+        } else if (line.startsWith('data: ')) {
+          currentData = line.slice(6).trim();
+        }
+      }
+
+      if (currentData) {
+        events.push({ event: currentEvent, data: JSON.parse(currentData) });
       }
     }
 
@@ -121,6 +132,8 @@ describe('Streaming Converter', () => {
       expect(events[0].data.message.usage.input_tokens).toBe(0);
       expect(events[0].data.message.usage.output_tokens).toBe(0);
       expect(events[0].data.message.usage).not.toHaveProperty('cache_read_input_tokens');
+      expect(mockRaw.chunks[0]).toContain('event: message_start\n');
+      expect(mockRaw.chunks[0]).toContain('\ndata: ');
     });
 
     it('should not record message_start placeholder usage', async () => {
@@ -274,6 +287,7 @@ describe('Streaming Converter', () => {
         (e) => e.data.type === 'content_block_delta' && e.data.delta?.type === 'input_json_delta'
       );
       expect(jsonDeltas.length).toBeGreaterThan(0);
+      expect(jsonDeltas.map((e) => e.data.delta.partial_json).join('')).toBe('{"city":"NYC"}');
     });
 
     it('should send message_stop event at end', async () => {
@@ -446,6 +460,35 @@ describe('Streaming Converter', () => {
       expect(usageRecord).not.toHaveProperty('cachedInputTokens');
     });
 
+    it('should ignore empty usage chunks when determining final usage', async () => {
+      const mockRaw = new MockRawResponse();
+      const mockReply = { raw: mockRaw } as any;
+      const recordUsage = require('../src/utils/tokenUsage').recordUsage;
+
+      const stream = createMockStream([
+        { choices: [{ delta: { content: 'Empty usage' }, finish_reason: null }] },
+        { choices: [], usage: {} },
+      ]);
+
+      await streamOpenAIToAnthropic(stream as any, mockReply, 'claude-4-opus');
+
+      const events = mockRaw.getEvents();
+      const messageDelta = events.find((e) => e.data.type === 'message_delta');
+
+      expect(messageDelta!.data.usage).not.toHaveProperty('input_tokens');
+      expect(recordUsage).toHaveBeenCalledTimes(1);
+      const usageRecord = recordUsage.mock.calls[0][0];
+      expect(usageRecord).toEqual(
+        expect.objectContaining({
+          usageStatus: 'missing_final_chunk',
+          streaming: true,
+        })
+      );
+      expect(usageRecord).not.toHaveProperty('inputTokens');
+      expect(usageRecord).not.toHaveProperty('outputTokens');
+      expect(usageRecord).not.toHaveProperty('cachedInputTokens');
+    });
+
     it('should include cached tokens in streaming usage events', async () => {
       const mockRaw = new MockRawResponse();
       const mockReply = { raw: mockRaw } as any;
@@ -493,6 +536,8 @@ describe('Streaming Converter', () => {
       const events = mockRaw.getEvents();
       const messageDelta = events.find((e) => e.data.type === 'message_delta');
 
+      expect(messageDelta!.data.usage.input_tokens).toBe(50);
+      expect(messageDelta!.data.usage.output_tokens).toBe(5);
       expect(messageDelta!.data.usage).toHaveProperty('cache_read_input_tokens', 0);
     });
 
