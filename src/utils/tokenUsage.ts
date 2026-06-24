@@ -2,15 +2,15 @@
 import { join } from 'path';
 import { getTodayDateString, getBaseDir, enqueueJsonLineWrite } from './fileStorage';
 
+export type UpstreamUsage = Record<string, unknown>;
+
 export interface TokenUsageRecord {
   timestamp: string; // ISO 8601
+  schemaVersion: 2;
   provider: string; // API endpoint/provider
   modelName: string; // Requested model name
   model?: string; // Actual model ID from API response
-  inputTokens?: number;
-  outputTokens?: number;
-  cachedInputTokens?: number;
-  cacheCreationInputTokens?: number;
+  usage?: UpstreamUsage;
   streaming: boolean;
   usageStatus: 'complete' | 'missing_final_chunk';
 }
@@ -28,10 +28,11 @@ function getUsageFilePath(dateStr: string): string {
  * Record token usage to the daily file
  * Non-blocking, fails silently on errors
  */
-export function recordUsage(data: Omit<TokenUsageRecord, 'timestamp'>): void {
+export function recordUsage(data: Omit<TokenUsageRecord, 'timestamp' | 'schemaVersion'>): void {
   try {
     const record: TokenUsageRecord = {
       timestamp: new Date().toISOString(),
+      schemaVersion: 2,
       ...data,
     };
 

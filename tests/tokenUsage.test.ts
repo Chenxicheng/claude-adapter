@@ -48,8 +48,11 @@ describe('Token Usage Utilities', () => {
         provider: 'https://api.openai.com/v1',
         modelName: 'claude-4-opus',
         model: 'gpt-4-turbo',
-        inputTokens: 100,
-        outputTokens: 50,
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 50,
+          total_tokens: 150,
+        },
         streaming: false,
         usageStatus: 'complete' as const,
       };
@@ -65,8 +68,10 @@ describe('Token Usage Utilities', () => {
       const usage = {
         provider: 'https://api.example.com',
         modelName: 'test-model',
-        inputTokens: 200,
-        outputTokens: 100,
+        usage: {
+          prompt_tokens: 200,
+          completion_tokens: 100,
+        },
         streaming: true,
         usageStatus: 'complete' as const,
       };
@@ -83,35 +88,14 @@ describe('Token Usage Utilities', () => {
       expect(content).toContain('test-model');
     });
 
-    it('should handle optional cached tokens', async () => {
+    it('should persist schema version in every record', async () => {
       const usage = {
         provider: 'https://api.example.com',
-        modelName: 'cached-model',
-        inputTokens: 300,
-        outputTokens: 150,
-        cachedInputTokens: 50,
-        streaming: false,
-        usageStatus: 'complete' as const,
-      };
-
-      recordUsage(usage);
-      await flushJsonLineWrites();
-
-      const usageDir = join(TEST_DIR, 'token_usage');
-      const files = require('fs').readdirSync(usageDir);
-      const content = readFileSync(join(usageDir, files[0]), 'utf-8');
-
-      expect(content).toContain('cachedInputTokens');
-      expect(content).toContain('50');
-    });
-
-    it('should handle optional cache creation tokens', async () => {
-      const usage = {
-        provider: 'https://api.example.com',
-        modelName: 'cache-create-model',
-        inputTokens: 200,
-        outputTokens: 100,
-        cacheCreationInputTokens: 25,
+        modelName: 'versioned-model',
+        usage: {
+          prompt_tokens: 300,
+          completion_tokens: 150,
+        },
         streaming: false,
         usageStatus: 'complete' as const,
       };
@@ -120,7 +104,55 @@ describe('Token Usage Utilities', () => {
       await flushJsonLineWrites();
 
       const record = readLastUsageRecord();
-      expect(record.cacheCreationInputTokens).toBe(25);
+      expect(record.schemaVersion).toBe(2);
+    });
+
+    it('should record raw upstream usage', async () => {
+      const usage = {
+        provider: 'https://api.example.com',
+        modelName: 'raw-usage-model',
+        usage: {
+          prompt_tokens: 200,
+          completion_tokens: 100,
+          total_tokens: 300,
+          prompt_tokens_details: {
+            cached_tokens: 125,
+          },
+        },
+        streaming: false,
+        usageStatus: 'complete' as const,
+      };
+
+      recordUsage(usage);
+      await flushJsonLineWrites();
+
+      const record = readLastUsageRecord();
+      expect(record.usage).toEqual(usage.usage);
+      expect(record).not.toHaveProperty('inputTokens');
+      expect(record).not.toHaveProperty('outputTokens');
+      expect(record).not.toHaveProperty('cachedInputTokens');
+      expect(record).not.toHaveProperty('cacheCreationInputTokens');
+    });
+
+    it('should preserve unknown upstream usage fields', async () => {
+      const usage = {
+        provider: 'https://api.example.com',
+        modelName: 'unknown-usage-model',
+        usage: {
+          billable_units: 42,
+          provider_specific: {
+            cache_tier: 'warm',
+          },
+        },
+        streaming: false,
+        usageStatus: 'complete' as const,
+      };
+
+      recordUsage(usage);
+      await flushJsonLineWrites();
+
+      const record = readLastUsageRecord();
+      expect(record.usage).toEqual(usage.usage);
     });
 
     it('should handle optional model field', async () => {
@@ -128,8 +160,10 @@ describe('Token Usage Utilities', () => {
         provider: 'https://api.example.com',
         modelName: 'requested-model',
         model: 'actual-model-id',
-        inputTokens: 400,
-        outputTokens: 200,
+        usage: {
+          prompt_tokens: 400,
+          completion_tokens: 200,
+        },
         streaming: true,
         usageStatus: 'complete' as const,
       };
@@ -149,16 +183,20 @@ describe('Token Usage Utilities', () => {
       const usage1 = {
         provider: 'provider-1',
         modelName: 'model-1',
-        inputTokens: 10,
-        outputTokens: 5,
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 5,
+        },
         streaming: false,
         usageStatus: 'complete' as const,
       };
       const usage2 = {
         provider: 'provider-2',
         modelName: 'model-2',
-        inputTokens: 20,
-        outputTokens: 10,
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 10,
+        },
         streaming: true,
         usageStatus: 'complete' as const,
       };
@@ -182,8 +220,10 @@ describe('Token Usage Utilities', () => {
         recordUsage({
           provider: 'queued-provider',
           modelName,
-          inputTokens: 1,
-          outputTokens: 1,
+          usage: {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+          },
           streaming: false,
           usageStatus: 'complete',
         });
@@ -207,8 +247,10 @@ describe('Token Usage Utilities', () => {
       recordUsage({
         provider: 'https://api.example.com',
         modelName: 'complete-model',
-        inputTokens: 8,
-        outputTokens: 4,
+        usage: {
+          prompt_tokens: 8,
+          completion_tokens: 4,
+        },
         streaming: true,
         usageStatus: 'complete',
       });
@@ -217,8 +259,10 @@ describe('Token Usage Utilities', () => {
       const record = readLastUsageRecord();
 
       expect(record.usageStatus).toBe('complete');
-      expect(record.inputTokens).toBe(8);
-      expect(record.outputTokens).toBe(4);
+      expect(record.usage).toEqual({
+        prompt_tokens: 8,
+        completion_tokens: 4,
+      });
     });
 
     it('should allow missing final chunk records without token counts', async () => {
@@ -233,9 +277,8 @@ describe('Token Usage Utilities', () => {
       const record = readLastUsageRecord();
 
       expect(record.usageStatus).toBe('missing_final_chunk');
-      expect(record).not.toHaveProperty('inputTokens');
-      expect(record).not.toHaveProperty('outputTokens');
-      expect(record).not.toHaveProperty('cachedInputTokens');
+      expect(record.schemaVersion).toBe(2);
+      expect(record).not.toHaveProperty('usage');
     });
   });
 });

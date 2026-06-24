@@ -403,8 +403,7 @@ describe('Streaming Converter', () => {
       expect(recordUsage).toHaveBeenCalledTimes(1);
       expect(recordUsage).toHaveBeenCalledWith(
         expect.objectContaining({
-          inputTokens: 20,
-          outputTokens: 10,
+          usage: { prompt_tokens: 20, completion_tokens: 10 },
           usageStatus: 'complete',
         })
       );
@@ -455,18 +454,17 @@ describe('Streaming Converter', () => {
           streaming: true,
         })
       );
-      expect(usageRecord).not.toHaveProperty('inputTokens');
-      expect(usageRecord).not.toHaveProperty('outputTokens');
-      expect(usageRecord).not.toHaveProperty('cachedInputTokens');
+      expect(usageRecord).not.toHaveProperty('usage');
     });
 
-    it('should ignore empty usage chunks when determining final usage', async () => {
+    it('should ignore null and empty usage chunks when determining final usage', async () => {
       const mockRaw = new MockRawResponse();
       const mockReply = { raw: mockRaw } as any;
       const recordUsage = require('../src/utils/tokenUsage').recordUsage;
 
       const stream = createMockStream([
         { choices: [{ delta: { content: 'Empty usage' }, finish_reason: null }] },
+        { choices: [], usage: null },
         { choices: [], usage: {} },
       ]);
 
@@ -484,9 +482,55 @@ describe('Streaming Converter', () => {
           streaming: true,
         })
       );
-      expect(usageRecord).not.toHaveProperty('inputTokens');
-      expect(usageRecord).not.toHaveProperty('outputTokens');
-      expect(usageRecord).not.toHaveProperty('cachedInputTokens');
+      expect(usageRecord).not.toHaveProperty('usage');
+    });
+
+    it('should record the last non-empty upstream usage object', async () => {
+      const mockRaw = new MockRawResponse();
+      const mockReply = { raw: mockRaw } as any;
+      const recordUsage = require('../src/utils/tokenUsage').recordUsage;
+
+      const firstUsage = { prompt_tokens: 3, completion_tokens: 1 };
+      const finalUsage = { prompt_tokens: 7, completion_tokens: 2, total_tokens: 9 };
+      const stream = createMockStream([
+        { choices: [{ delta: { content: 'Multiple usage' }, finish_reason: null }] },
+        { choices: [], usage: firstUsage },
+        { choices: [], usage: finalUsage },
+      ]);
+
+      await streamOpenAIToAnthropic(stream as any, mockReply, 'claude-4-opus');
+
+      expect(recordUsage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          usage: finalUsage,
+          usageStatus: 'complete',
+        })
+      );
+    });
+
+    it('should record non-empty unknown upstream usage fields without changing response usage', async () => {
+      const mockRaw = new MockRawResponse();
+      const mockReply = { raw: mockRaw } as any;
+      const recordUsage = require('../src/utils/tokenUsage').recordUsage;
+      const upstreamUsage = { billable_units: 42 };
+
+      const stream = createMockStream([
+        { choices: [{ delta: { content: 'Unknown usage' }, finish_reason: null }] },
+        { choices: [], usage: upstreamUsage as any },
+      ]);
+
+      await streamOpenAIToAnthropic(stream as any, mockReply, 'claude-4-opus');
+
+      const events = mockRaw.getEvents();
+      const messageDelta = events.find((e) => e.data.type === 'message_delta');
+
+      expect(messageDelta!.data.usage).not.toHaveProperty('input_tokens');
+      expect(recordUsage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          usage: upstreamUsage,
+          usageStatus: 'complete',
+        })
+      );
     });
 
     it('should include cached tokens in streaming usage events', async () => {
@@ -570,11 +614,16 @@ describe('Streaming Converter', () => {
       expect(messageDelta!.data.usage.cache_creation_input_tokens).toBeUndefined();
       expect(recordUsage).toHaveBeenCalledWith(
         expect.objectContaining({
-          inputTokens: 40,
-          outputTokens: 12,
-          cachedInputTokens: 80,
+          usage: {
+            prompt_tokens: 120,
+            completion_tokens: 12,
+            prompt_tokens_details: { cached_tokens: 80 },
+            completion_tokens_details: { reasoning_tokens: 7 },
+          },
         })
       );
+      expect(recordUsage.mock.calls[0][0]).not.toHaveProperty('inputTokens');
+      expect(recordUsage.mock.calls[0][0]).not.toHaveProperty('cachedInputTokens');
     });
 
     it('should convert vendor reasoning chunks to Anthropic thinking deltas', async () => {

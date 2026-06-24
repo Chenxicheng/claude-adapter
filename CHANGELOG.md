@@ -8,95 +8,14 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ## [Unreleased]
 
-### Fixed
-
-- **Streaming Usage**: Distinguished complete final usage from missing final usage chunks in streaming usage records.
-
-### Changed
-
-- **Token Usage**: Added `usageStatus` to JSONL usage records so complete and incomplete usage data can be audited.
-- **Tool Calling**: Removed the legacy non-native tool-calling path and standardized the adapter on native tool/function calling only.
-
-### Build
-
-- **Lint**: Added ESLint 9 flat config compatibility for the existing lint script.
-
 ---
 
-## [2.2.0] — 2026-05-30
-
-### Added
-
-- **Azure OpenAI**: Added support for `max_completion_tokens` on Azure OpenAI endpoints.
+## [1.2.1] — 2026-06-24
 
 ### Fixed
 
-- **Claude Code**: Accepted unknown message roles and missing or empty content blocks to ensure compatibility with Claude Code v2.1.156+.
-- **Tests**: Added comprehensive test coverage for request conversion error branches, ensuring 100% patch coverage.
-
----
-
-## [2.1.2] — 2026-05-30
-
-### Fixed
-
-- **Logger**: Fixed simple info logging to serialize metadata on a single line for compatibility with line-oriented log collectors while ensuring consistent cyan console coloring.
-- **Logger**: Resolved non-actionable logger debug comments.
-- **Streaming**: Enhanced streaming tests to strictly verify that `input_tokens` is omitted from the `message_delta` event's usage object.
-
-### Performance
-
-- **Metadata**: Implemented an in-memory cache for `loadMetadata` to eliminate redundant synchronous disk reads, reducing lookup times from ~160ms to ~1ms.
-- **Legacy Tool Path**: Switched to array accumulation and join for the legacy non-native tool-calling formatter to ensure efficient O(N) allocation.
-
-### Refactored
-
-- **UI Module**: Refactored the `UI` module to use the central logger instead of standard `console.log`.
-
----
-
-## [2.1.1] — 2026-04-20
-
-### Fixed
-
-- **Streaming**: Fixed duplicate text block stops in native streaming mode when streamed text is followed by a native tool call. This prevents duplicate assistant preamble rendering in Claude Code.
-- **Streaming**: Fixed tool block index handling to ensure tool blocks close with the same index they started with.
-
----
-
-## [2.1.0] — 2026-01-19
-
-### Added
-
-- **CLI**: Added `--no-claude-settings` flag to skip automatic Claude Code settings modification
-
----
-
-## [2.0.0] — 2025-12-30
-
-### Breaking Changes
-
-- **Node.js Requirement**: Raised minimum supported Node.js version to **v20.0.0**.
-
-### Added
-
-- **Legacy Tool Calling**: Added a non-native tool-calling path for models lacking native tool usage, including prompt injection, output parsing, and history reconstruction.
-- **Deterministic Output**: Enforced `temperature: 0` and `<think>` block filtering for the legacy non-native tool path to ensure reliability.
-- **CLI Setup**: Added interactive configuration for tool-calling capabilities and styles.
-
-### Fixed
-
-- **Legacy Tool History**: Resolved conversation history mismatches during multi-turn tool interactions.
-- **Legacy Tool Parsing**: Improved resilience against whitespace variations and case sensitivity in model outputs.
-
----
-
-## [1.2.1] — 2025-12-26
-
-### Fixed
-
-- **Streaming Usage**: Fixed zero-token reporting and handled usage data in empty end-of-stream chunks.
-- **Update Logic**: Switched to Semantic Versioning for accurate update detection.
+- **Token Usage JSONL**: Changed persisted usage records to schema version 2 and now stores the upstream raw `usage` object.
+- **Token Usage JSONL**: Removed converted usage fields from new records: `inputTokens`, `outputTokens`, `cachedInputTokens`, and `cacheCreationInputTokens`.
 
 ---
 

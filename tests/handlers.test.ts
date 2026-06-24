@@ -255,8 +255,7 @@ describe('Error Response Handling', () => {
       expect(mockReply.send).toHaveBeenCalled();
       expect(recordUsage).toHaveBeenCalledWith(
         expect.objectContaining({
-          inputTokens: 10,
-          outputTokens: 5,
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
           usageStatus: 'complete',
         })
       );
@@ -301,18 +300,19 @@ describe('Error Response Handling', () => {
       expect(mockReply.send).toHaveBeenCalled();
     });
 
-    it('should record fresh input tokens instead of raw prompt tokens when cache data is present', async () => {
+    it('should record raw upstream usage when cache data is present', async () => {
       const handler = handlersModule.createMessagesHandler(config);
       const recordUsage = require('../src/utils/tokenUsage').recordUsage;
+      const upstreamUsage = {
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        prompt_tokens_details: { cached_tokens: 60 },
+      };
 
       mockCreateChatCompletion.mockResolvedValue({
         id: 'chatcmpl-123',
         choices: [{ finish_reason: 'stop', message: { content: 'Hello' } }],
-        usage: {
-          prompt_tokens: 100,
-          completion_tokens: 10,
-          prompt_tokens_details: { cached_tokens: 60 },
-        },
+        usage: upstreamUsage,
         model: 'gpt-4',
       });
 
@@ -320,10 +320,27 @@ describe('Error Response Handling', () => {
 
       expect(recordUsage).toHaveBeenCalledWith(
         expect.objectContaining({
-          inputTokens: 40,
-          cachedInputTokens: 60,
+          usage: upstreamUsage,
         })
       );
+      expect(recordUsage.mock.calls[0][0]).not.toHaveProperty('inputTokens');
+      expect(recordUsage.mock.calls[0][0]).not.toHaveProperty('cachedInputTokens');
+    });
+
+    it('should not record non-streaming usage when upstream usage is empty', async () => {
+      const handler = handlersModule.createMessagesHandler(config);
+      const recordUsage = require('../src/utils/tokenUsage').recordUsage;
+
+      mockCreateChatCompletion.mockResolvedValue({
+        id: 'chatcmpl-123',
+        choices: [{ finish_reason: 'stop', message: { content: 'Hello' } }],
+        usage: {},
+        model: 'gpt-4',
+      });
+
+      await handler({ body: { ...mockRequestBase, stream: false } }, mockReply);
+
+      expect(recordUsage).not.toHaveBeenCalled();
     });
   });
 });

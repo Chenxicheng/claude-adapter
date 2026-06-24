@@ -10,6 +10,7 @@ import {
   buildMessageDeltaUsage,
   buildMessageStartUsage,
   buildStreamUsageRecord,
+  isNonEmptyUsage,
   StreamUsageState,
 } from './usage';
 
@@ -108,6 +109,10 @@ export async function streamOpenAIToAnthropic(
 }
 
 function processChunk(chunk: OpenAIStreamChunk, state: StreamingState, raw: RawReply): void {
+  if (isNonEmptyUsage(chunk.usage)) {
+    state.upstreamUsage = chunk.usage;
+  }
+
   // Update usage only when the chunk carries real token counters.
   if (hasOpenAIUsageData(chunk.usage)) {
     applyOpenAIUsage(state, chunk.usage);

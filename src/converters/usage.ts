@@ -1,4 +1,4 @@
-import { TokenUsageRecord } from '../utils/tokenUsage';
+import { TokenUsageRecord, UpstreamUsage } from '../utils/tokenUsage';
 import { AnthropicUsage } from '../types/anthropic';
 import { OpenAIUsage } from '../types/openai';
 
@@ -18,7 +18,17 @@ export interface StreamUsageState {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  upstreamUsage?: UpstreamUsage;
   usageReceived: boolean;
+}
+
+export function isNonEmptyUsage(usage: unknown): usage is UpstreamUsage {
+  return (
+    typeof usage === 'object' &&
+    usage !== null &&
+    !Array.isArray(usage) &&
+    Object.keys(usage).length > 0
+  );
 }
 
 export function normalizeAnthropicUsageFromOpenAI(usage?: OpenAIUsage): NormalizedUsage {
@@ -87,26 +97,21 @@ export function buildStreamUsageRecord(args: {
   modelName: string;
   model?: string;
   state: StreamUsageState;
-}): Omit<TokenUsageRecord, 'timestamp'> {
+}): Omit<TokenUsageRecord, 'timestamp' | 'schemaVersion'> {
   const base = {
     provider: args.provider,
     modelName: args.modelName,
     model: args.model,
     streaming: true,
-    usageStatus: args.state.usageReceived ? 'complete' : 'missing_final_chunk',
+    usageStatus: args.state.upstreamUsage ? 'complete' : 'missing_final_chunk',
   } as const;
 
-  if (!args.state.usageReceived) {
+  if (!args.state.upstreamUsage) {
     return base;
   }
 
-  const record: Omit<TokenUsageRecord, 'timestamp'> = {
+  return {
     ...base,
-    inputTokens: args.state.inputTokens,
-    outputTokens: args.state.outputTokens,
+    usage: args.state.upstreamUsage,
   };
-  if (args.state.cachedInputTokens !== undefined) {
-    record.cachedInputTokens = args.state.cachedInputTokens;
-  }
-  return record;
 }

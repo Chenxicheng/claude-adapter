@@ -7,7 +7,7 @@ import { convertRequestToOpenAI } from '../converters/request';
 import { isAzureOpenAIEndpoint } from '../utils/endpoint';
 import { convertResponseToAnthropic, createErrorResponse } from '../converters/response';
 import { streamOpenAIToAnthropic } from '../converters/streaming';
-import { normalizeAnthropicUsageFromOpenAI } from '../converters/usage';
+import { isNonEmptyUsage } from '../converters/usage';
 import { validateAnthropicRequest, formatValidationErrors } from '../utils/validation';
 import { logger, RequestLogger } from '../utils/logger';
 import { recordUsage } from '../utils/tokenUsage';
@@ -118,17 +118,12 @@ async function handleNonStreamingRequest(
   });
 
   // Record token usage
-  if (response.usage) {
-    const normalizedUsage = normalizeAnthropicUsageFromOpenAI(response.usage);
+  if (isNonEmptyUsage(response.usage)) {
     recordUsage({
       provider,
       modelName: originalModel,
       model: response.model,
-      inputTokens: normalizedUsage.inputTokens,
-      outputTokens: normalizedUsage.outputTokens,
-      ...(normalizedUsage.cacheReadInputTokens !== undefined
-        ? { cachedInputTokens: normalizedUsage.cacheReadInputTokens }
-        : {}),
+      usage: response.usage,
       streaming: false,
       usageStatus: 'complete',
     });
