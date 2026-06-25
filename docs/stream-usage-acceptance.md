@@ -13,16 +13,23 @@ Official references:
 
 ## Usage Mapping
 
-| OpenAI final usage field              | Anthropic usage field     |
-| ------------------------------------- | ------------------------- |
-| `prompt_tokens - cached_tokens`       | `input_tokens`            |
-| `completion_tokens`                   | `output_tokens`           |
-| `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens` |
+| OpenAI final usage field | Anthropic usage field |
+| ------------------------ | --------------------- |
+| `prompt_tokens`          | `input_tokens`        |
+| `completion_tokens`      | `output_tokens`       |
+
+`prompt_tokens_details.cached_tokens` is not mapped to Anthropic response usage
+for the OpenAI Chat Completions path. It remains available in raw upstream usage
+records for cache-hit and cost analysis.
 
 ## Acceptance Goals
 
-- Native stream maps upstream prompt usage to Anthropic fresh-input semantics:
-  `input_tokens = prompt_tokens - cache_read_input_tokens`.
+- Native stream maps upstream prompt usage to full input context semantics:
+  `input_tokens = prompt_tokens`.
+- OpenAI `prompt_tokens_details.cached_tokens` must not be subtracted from
+  `input_tokens` or exposed as Anthropic `cache_read_input_tokens`, because this
+  adapter prioritizes Claude Code context-window safety over cache billing
+  display compatibility.
 - Native OpenAI Chat Completions usage does not include Anthropic
   `cache_creation_input_tokens`, so the adapter must not infer cache creation
   tokens from OpenAI usage.
@@ -59,9 +66,9 @@ Use mock stream chunks with final OpenAI-compatible usage:
 
 Native stream must satisfy:
 
-- `message_delta.usage.input_tokens === 12`
+- `message_delta.usage.input_tokens === 20`
 - `message_delta.usage.output_tokens === 10`
-- `message_delta.usage.cache_read_input_tokens === 8`
+- `message_delta.usage.cache_read_input_tokens === undefined`
 - `message_start` is still the first event
 
 OpenAI completion usage breakdown must not reduce Anthropic output tokens:
@@ -81,9 +88,9 @@ OpenAI completion usage breakdown must not reduce Anthropic output tokens:
 
 Native stream must then satisfy:
 
-- `message_delta.usage.input_tokens === 40`
+- `message_delta.usage.input_tokens === 120`
 - `message_delta.usage.output_tokens === 12`
-- `message_delta.usage.cache_read_input_tokens === 80`
+- `message_delta.usage.cache_read_input_tokens === undefined`
 - `message_delta.usage.cache_creation_input_tokens === undefined`
 
 Native stream must also omit `message_delta.usage.input_tokens` when no upstream usage chunk arrives, while preserving a real upstream `prompt_tokens: 0`.
@@ -95,6 +102,8 @@ Usage recording must satisfy:
 - Stream responses with final usage record `usageStatus: "complete"` with real usage fields.
 - Stream responses without final usage record `usageStatus: "missing_final_chunk"` and omit unknown token fields.
 - OpenAI usage records must not include `cacheCreationInputTokens`; native Chat Completions usage does not report cache creation tokens.
+- Raw OpenAI usage records must preserve `prompt_tokens_details.cached_tokens`
+  when upstream provides it.
 - `message_start.message.usage` placeholder values are never persisted as token usage.
 
 Reasoning trace compatibility must satisfy:

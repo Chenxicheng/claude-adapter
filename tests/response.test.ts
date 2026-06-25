@@ -66,7 +66,7 @@ describe('Response Converter', () => {
       });
     });
 
-    it('should map cached_tokens to cache_read_input_tokens', () => {
+    it('should treat prompt_tokens as full input context when cached_tokens are present', () => {
       const openaiResponse: OpenAIChatResponse = {
         id: 'chatcmpl-cache',
         object: 'chat.completion',
@@ -90,11 +90,11 @@ describe('Response Converter', () => {
       };
 
       const result = convertResponseToAnthropic(openaiResponse, 'claude-4-sonnet');
-      expect(result.usage.input_tokens).toBe(200);
-      expect(result.usage.cache_read_input_tokens).toBe(800);
+      expect(result.usage.input_tokens).toBe(1000);
+      expect(result.usage.cache_read_input_tokens).toBeUndefined();
     });
 
-    it('should preserve explicit zero cached tokens', () => {
+    it('should not expose explicit zero cached tokens as Anthropic cache usage', () => {
       const openaiResponse: OpenAIChatResponse = {
         id: 'chatcmpl-zero-cache',
         object: 'chat.completion',
@@ -119,7 +119,7 @@ describe('Response Converter', () => {
 
       const result = convertResponseToAnthropic(openaiResponse, 'claude-4-sonnet');
       expect(result.usage.input_tokens).toBe(100);
-      expect(result.usage.cache_read_input_tokens).toBe(0);
+      expect(result.usage.cache_read_input_tokens).toBeUndefined();
       expect(result.usage.cache_creation_input_tokens).toBeUndefined();
     });
 

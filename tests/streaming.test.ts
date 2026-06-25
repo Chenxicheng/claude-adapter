@@ -533,7 +533,7 @@ describe('Streaming Converter', () => {
       );
     });
 
-    it('should include cached tokens in streaming usage events', async () => {
+    it('should treat prompt tokens as full streaming input context when cached tokens are present', async () => {
       const mockRaw = new MockRawResponse();
       const mockReply = { raw: mockRaw } as any;
 
@@ -554,12 +554,12 @@ describe('Streaming Converter', () => {
       const events = mockRaw.getEvents();
       const messageDelta = events.find((e) => e.data.type === 'message_delta');
 
-      expect(messageDelta!.data.usage.input_tokens).toBe(100);
+      expect(messageDelta!.data.usage.input_tokens).toBe(500);
       expect(messageDelta!.data.usage.output_tokens).toBe(10);
-      expect(messageDelta!.data.usage.cache_read_input_tokens).toBe(400);
+      expect(messageDelta!.data.usage.cache_read_input_tokens).toBeUndefined();
     });
 
-    it('should preserve explicit zero cached tokens in streaming usage events', async () => {
+    it('should not expose explicit zero cached tokens in streaming usage events', async () => {
       const mockRaw = new MockRawResponse();
       const mockReply = { raw: mockRaw } as any;
 
@@ -582,7 +582,7 @@ describe('Streaming Converter', () => {
 
       expect(messageDelta!.data.usage.input_tokens).toBe(50);
       expect(messageDelta!.data.usage.output_tokens).toBe(5);
-      expect(messageDelta!.data.usage).toHaveProperty('cache_read_input_tokens', 0);
+      expect(messageDelta!.data.usage.cache_read_input_tokens).toBeUndefined();
     });
 
     it('should not subtract reasoning tokens from streaming output tokens', async () => {
@@ -608,9 +608,9 @@ describe('Streaming Converter', () => {
       const events = mockRaw.getEvents();
       const messageDelta = events.find((e) => e.data.type === 'message_delta');
 
-      expect(messageDelta!.data.usage.input_tokens).toBe(40);
+      expect(messageDelta!.data.usage.input_tokens).toBe(120);
       expect(messageDelta!.data.usage.output_tokens).toBe(12);
-      expect(messageDelta!.data.usage.cache_read_input_tokens).toBe(80);
+      expect(messageDelta!.data.usage.cache_read_input_tokens).toBeUndefined();
       expect(messageDelta!.data.usage.cache_creation_input_tokens).toBeUndefined();
       expect(recordUsage).toHaveBeenCalledWith(
         expect.objectContaining({

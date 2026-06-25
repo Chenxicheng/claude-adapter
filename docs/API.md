@@ -61,13 +61,15 @@ Content-Type: application/json
   stop_reason: 'end_turn' | 'max_tokens' | 'tool_use' | null;
   stop_sequence: string | null;
   usage: {
-    input_tokens: number; // Fresh input only: excludes cache read/create tokens
+    input_tokens: number; // Full OpenAI prompt_tokens context usage
     output_tokens: number;
-    cache_read_input_tokens?: number;
-    cache_creation_input_tokens?: number;
   };
 }
 ```
+
+For OpenAI Chat Completions backends, the adapter does not emit Anthropic
+prompt-cache usage fields. Raw upstream usage records preserve OpenAI cache
+details separately.
 
 **Response (Streaming):**
 Server-Sent Events (SSE) with the following event types:
@@ -89,6 +91,10 @@ only: the adapter does not generate fake Anthropic `signature` or
 
 - OpenAI Chat-compatible model families:
   - Streaming requests always send `stream_options.include_usage = true`.
+  - OpenAI `prompt_tokens` is exposed as Anthropic `input_tokens` without
+    subtracting `prompt_tokens_details.cached_tokens`, so Claude Code sees the
+    full input context usage. Raw upstream usage records still preserve
+    `cached_tokens` for cache-hit and cost analysis.
   - `o*` and `gpt-5*` requests use `max_completion_tokens`.
   - OpenAI reasoning models can map Anthropic `thinking` / `output_config.effort`
     to `reasoning_effort`; `effort: "max"` maps to OpenAI `xhigh`.

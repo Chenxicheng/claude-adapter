@@ -5,19 +5,16 @@ import { OpenAIUsage } from '../types/openai';
 interface NormalizedUsage {
   inputTokens: number;
   outputTokens: number;
-  cacheReadInputTokens?: number;
 }
 
 interface MessageDeltaUsage {
   input_tokens?: number;
   output_tokens: number;
-  cache_read_input_tokens?: number;
 }
 
 export interface StreamUsageState {
   inputTokens: number;
   outputTokens: number;
-  cachedInputTokens?: number;
   upstreamUsage?: UpstreamUsage;
   usageReceived: boolean;
 }
@@ -32,32 +29,19 @@ export function isNonEmptyUsage(usage: unknown): usage is UpstreamUsage {
 }
 
 export function normalizeAnthropicUsageFromOpenAI(usage?: OpenAIUsage): NormalizedUsage {
-  const promptTokens = usage?.prompt_tokens ?? 0;
-  const outputTokens = usage?.completion_tokens ?? 0;
-  const cacheReadInputTokens = usage?.prompt_tokens_details?.cached_tokens;
-  const inputTokens = Math.max(0, promptTokens - (cacheReadInputTokens ?? 0));
-
-  const normalized: NormalizedUsage = {
-    inputTokens,
-    outputTokens,
+  return {
+    inputTokens: usage?.prompt_tokens ?? 0,
+    outputTokens: usage?.completion_tokens ?? 0,
   };
-  if (cacheReadInputTokens !== undefined) {
-    normalized.cacheReadInputTokens = cacheReadInputTokens;
-  }
-  return normalized;
 }
 
 export function buildAnthropicUsageFromOpenAI(usage?: OpenAIUsage): AnthropicUsage {
   const normalized = normalizeAnthropicUsageFromOpenAI(usage);
 
-  const anthropicUsage: AnthropicUsage = {
+  return {
     input_tokens: normalized.inputTokens,
     output_tokens: normalized.outputTokens,
   };
-  if (normalized.cacheReadInputTokens !== undefined) {
-    anthropicUsage.cache_read_input_tokens = normalized.cacheReadInputTokens;
-  }
-  return anthropicUsage;
 }
 
 export function applyOpenAIUsage(state: StreamUsageState, usage: OpenAIUsage): void {
@@ -65,7 +49,6 @@ export function applyOpenAIUsage(state: StreamUsageState, usage: OpenAIUsage): v
 
   state.inputTokens = normalized.inputTokens;
   state.outputTokens = normalized.outputTokens;
-  state.cachedInputTokens = normalized.cacheReadInputTokens;
   state.usageReceived = true;
 }
 
@@ -85,9 +68,6 @@ export function buildMessageDeltaUsage(state: StreamUsageState): MessageDeltaUsa
   };
   if (state.usageReceived) {
     usage.input_tokens = state.inputTokens;
-  }
-  if (state.cachedInputTokens !== undefined) {
-    usage.cache_read_input_tokens = state.cachedInputTokens;
   }
   return usage;
 }
