@@ -1,0 +1,15 @@
+{
+  "name": "claude-adapter-win32-x64-msvc",
+  "version": "2.0.0",
+  "description": "claude-adapter native binary for Windows x64",
+  "license": "MIT",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/claude-adapter-native.exe"
+  ]
+}

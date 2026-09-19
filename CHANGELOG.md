@@ -10,6 +10,27 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ---
 
+## [2.0.0] — 2026-09-19
+
+### Added
+
+- **Native proxy**: Moved HTTP, protocol conversion, SSE, tools, usage, and errors to a Rust service shipped through platform-specific npm packages.
+- **Protocol conversion**: Preserved assistant prefills, completed Anthropic tool-choice mapping, and now rejects unsupported roles, blocks, server tools, cache-only requests, and malformed upstream tool calls instead of silently dropping or approximating them.
+- **Responses**: Unified streaming and non-streaming finish reasons, added refusal `stop_details` and current usage fields, and kept third-party reasoning text private while preserving its token breakdown.
+- **Vision input**: Added ordered Base64 and URL image conversion, including explicitly associated tool-result screenshots.
+- **Bounded observability**: Added buffered, asynchronous JSONL writers with graceful flush and saturation accounting.
+
+### Changed
+
+- **Breaking**: `claude-adapter` is now CLI-only; JavaScript server, converter, and type exports were removed.
+- **Performance**: Shared upstream connections and demand-driven streaming improve concurrent throughput and memory use.
+
+### Compatibility
+
+- Existing CLI flags and `~/.claude-adapter/config.json` continue to work without manual migration.
+
+---
+
 ## [1.2.1] — 2026-06-24
 
 ### Fixed

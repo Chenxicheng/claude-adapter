@@ -1,5 +1,4 @@
 import chalk from 'chalk';
-import { logger } from './logger';
 
 // Claude Code Inspired Palette
 const Palette = {
@@ -14,7 +13,7 @@ const Palette = {
 
 export class UI {
   static log(message: string) {
-    logger.print(message);
+    console.log(message);
   }
 
   static info(message: string) {

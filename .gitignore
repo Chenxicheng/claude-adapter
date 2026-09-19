@@ -5,6 +5,8 @@ node_modules/
 dist/
 build/
 release/
+native/target/
+npm/*/bin/
 
 # IDE
 .idea/

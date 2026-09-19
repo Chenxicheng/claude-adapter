@@ -1,32 +1,26 @@
-# API Reference
+# HTTP API Reference
 
-Complete API documentation for **Claude Adapter** — _Adapt any model for Claude Code_.
+Claude Adapter 2.0 is a CLI product. It starts a native Rust proxy and does not export Node.js server or converter APIs.
 
-## Endpoints
+## `POST /v1/messages`
 
-### POST /v1/messages
-
-The main API endpoint that accepts Anthropic Messages API requests and proxies them to an OpenAI-compatible backend.
-Tool use requires an upstream model with native tool/function calling support.
-This adapter currently targets the Chat Completions-style proxy path only. It does not expose a Responses API route yet.
-
-**Request Headers:**
-
-```
-Content-Type: application/json
-```
-
-**Request Body:**
+Accepts an Anthropic Messages request and forwards it to the configured OpenAI-compatible Chat Completions endpoint. The maximum request body is 32 MiB.
 
 ```typescript
 {
-  model: string;           // Required: Model name (passed through directly)
-  max_tokens: number;      // Required: Maximum tokens in response
-  messages: Message[];     // Required: Array of conversation messages
-  system?: string;         // Optional: System prompt
-  temperature?: number;    // Optional: 0-1, sampling temperature
-  top_p?: number;          // Optional: 0-1, nucleus sampling
-  stream?: boolean;        // Optional: Enable streaming responses
+  model: string;
+  max_tokens: number;
+  messages: Array<{
+    role: 'user' | 'assistant';
+    content: string | ContentBlock[];
+  }>;
+  system?: string | ContentBlock[];
+  temperature?: number;
+  top_p?: number;
+  stream?: boolean;
+  stop_sequences?: string[];
+  tools?: Tool[];
+  tool_choice?: ToolChoice;
   thinking?: {
     type?: 'enabled' | 'disabled' | 'adaptive';
     budget_tokens?: number;
@@ -34,22 +28,49 @@ Content-Type: application/json
   output_config?: {
     effort?: 'low' | 'medium' | 'high' | 'max';
   };
-  stop_sequences?: string[]; // Optional: Stop sequences
-  tools?: Tool[];          // Optional: Tool definitions
-  tool_choice?: ToolChoice; // Optional: Tool selection preference
 }
 ```
 
-**Message Format:**
+Every response includes `x-request-id`.
 
-```typescript
+Only `user` and `assistant` message roles are accepted. Assistant prefills are forwarded unchanged. Unsupported content blocks, Anthropic server tools, server-tool state, `allowed_callers`, `defer_loading`, and cache-only requests (`max_tokens: 0`) return `400` instead of being dropped or approximated.
+
+Client tools may omit `type` or use `type: "custom"`; `name` must be non-empty and `input_schema` must be an object. Tool `strict` maps to the OpenAI function definition. Tool choices map as `none → none`, `auto → auto`, `any → required`, and named `tool → function`; `disable_parallel_tool_use: true` maps to `parallel_tool_calls: false`. `cache_control` is accepted but not converted—the configured OpenAI-compatible upstream remains responsible for any provider-specific caching.
+
+Historical assistant `thinking` and `redacted_thinking` blocks are removed only when the same turn still contains text or a tool call. A turn that would become empty returns `400`.
+
+### Images
+
+Base64 sources become OpenAI data URLs:
+
+```json
 {
-  role: 'user' | 'assistant';
-  content: string | ContentBlock[];
+  "type": "image",
+  "source": {
+    "type": "base64",
+    "media_type": "image/png",
+    "data": "iVBORw0KGgo..."
+  }
 }
 ```
 
-**Response (Non-streaming):**
+HTTP and HTTPS URL sources are forwarded without downloading or rewriting:
+
+```json
+{
+  "type": "image",
+  "source": {
+    "type": "url",
+    "url": "https://example.com/image.png"
+  }
+}
+```
+
+The adapter validates Base64, URL schemes, supported image MIME types, and required fields. `file_id` sources return `400`; use Base64 or an HTTP(S) URL. GIF content is forwarded as an image, without an animation guarantee.
+
+For image-bearing `tool_result` blocks, text-only `role=tool` messages are emitted first. Images then appear in one `role=user` message labelled with the resolved `tool_call_id`. An image-only result receives an explicit `image follows` placeholder.
+
+### Non-streaming response
 
 ```typescript
 {
@@ -58,132 +79,56 @@ Content-Type: application/json
   role: 'assistant';
   content: ContentBlock[];
   model: string;
-  stop_reason: 'end_turn' | 'max_tokens' | 'tool_use' | null;
+  stop_reason: 'end_turn' | 'max_tokens' | 'tool_use' | 'refusal';
+  stop_details: { type: 'refusal'; category: null; explanation: string } | null;
   stop_sequence: string | null;
+  container: null;
   usage: {
-    input_tokens: number; // Full OpenAI prompt_tokens context usage
+    input_tokens: number;
     output_tokens: number;
+    cache_creation_input_tokens: null;
+    cache_read_input_tokens: null;
+    output_tokens_details: { thinking_tokens: number } | null;
+    server_tool_use: null;
+    cache_creation: null;
+    inference_geo: null;
+    service_tier: null;
   };
 }
 ```
 
-For OpenAI Chat Completions backends, the adapter does not emit Anthropic
-prompt-cache usage fields. Raw upstream usage records preserve OpenAI cache
-details separately.
+Finish reasons map as `stop → end_turn`, `length → max_tokens`, `tool_calls → tool_use`, and `content_filter → refusal`. A refusal remains a normal text content block and includes `stop_details`. Unknown or legacy `function_call` finish reasons, missing tool names, and tool arguments that are not a complete JSON object are upstream protocol errors (`502`). The adapter cannot distinguish a natural OpenAI `stop` from a custom stop-sequence match, so `stop_sequence` remains `null`.
 
-**Response (Streaming):**
-Server-Sent Events (SSE) with the following event types:
+### Streaming response
 
-- `message_start` - Initial message metadata
-- `content_block_start` - Start of a content block
-- `content_block_delta` - Content update
-- `content_block_stop` - End of a content block
-- `message_delta` - Final message metadata with stop_reason
-- `message_stop` - Stream complete
+Streaming uses SSE and preserves Anthropic event order:
 
-If an upstream vendor sends private reasoning traces such as `reasoning` or
-`reasoning_content`, the adapter maps them to Anthropic-compatible `thinking`
-blocks so Claude Code can display them. These blocks are display compatibility
-only: the adapter does not generate fake Anthropic `signature` or
-`signature_delta` fields.
+- `message_start`
+- `content_block_start`
+- `content_block_delta`
+- `content_block_stop`
+- `message_delta`
+- `message_stop`
 
-## Model-Family Notes
+The final upstream usage chunk supplies the final usage values. If it is absent, final `input_tokens` is `null` rather than a fabricated zero. Private third-party `reasoning` or `reasoning_content` is not exposed as text or Anthropic thinking and is never logged; only `completion_tokens_details.reasoning_tokens` is mapped to `output_tokens_details.thinking_tokens`. A reasoning-only result is an upstream protocol error. Malformed streamed tool arguments emit an Anthropic `error` event and do not emit successful `message_delta` or `message_stop` events.
 
-- OpenAI Chat-compatible model families:
-  - Streaming requests always send `stream_options.include_usage = true`.
-  - OpenAI `prompt_tokens` is exposed as Anthropic `input_tokens` without
-    subtracting `prompt_tokens_details.cached_tokens`, so Claude Code sees the
-    full input context usage. Raw upstream usage records still preserve
-    `cached_tokens` for cache-hit and cost analysis.
-  - `o*` and `gpt-5*` requests use `max_completion_tokens`.
-  - OpenAI reasoning models can map Anthropic `thinking` / `output_config.effort`
-    to `reasoning_effort`; `effort: "max"` maps to OpenAI `xhigh`.
-- GLM-5:
-  - `glm-5*` forwards Anthropic thinking controls as GLM `thinking`.
-  - `glm-5.2*` can additionally receive GLM `reasoning_effort`.
-  - Tool streaming is enabled automatically for streaming tool calls.
-- Qwen3 / Qwen3.6:
-  - Anthropic thinking requests are forwarded through `enable_thinking=true`.
-  - In this adapter path, Qwen thinking requires `stream: true`.
-- Generic OpenAI-compatible models:
-  - The adapter does not send GLM/Qwen private fields unless the model name
-    matches those model families.
-
----
-
-### GET /health
-
-Health check endpoint.
-
-**Response:**
+## `GET /health`
 
 ```json
 {
   "status": "ok",
-  "adapter": "claude-adapter"
+  "adapter": "claude-adapter",
+  "dropped_jsonl_records": 0
 }
 ```
 
----
+The dropped counter increases when the bounded observability queue cannot accept another JSONL record. Proxy traffic is not blocked by observability writes.
 
-## Converter Functions
-
-### convertRequestToOpenAI
-
-Converts an Anthropic Messages API request to OpenAI Chat Completions format.
-
-```typescript
-import { convertRequestToOpenAI } from 'claude-adapter';
-
-const openaiRequest = convertRequestToOpenAI(anthropicRequest, 'gpt-4');
-```
-
-**Parameters:**
-
-- `anthropicRequest: AnthropicMessageRequest` - The incoming request
-- `targetModel: string` - The OpenAI model to use
-
-**Returns:** `OpenAIChatRequest`
-
----
-
-### convertResponseToAnthropic
-
-Converts an OpenAI Chat Completion response to Anthropic format.
-
-```typescript
-import { convertResponseToAnthropic } from 'claude-adapter';
-
-const anthropicResponse = convertResponseToAnthropic(openaiResponse, 'claude-4-opus');
-```
-
-**Parameters:**
-
-- `openaiResponse: OpenAIChatResponse` - The OpenAI response
-- `originalModelRequested: string` - Model name to include in response
-
-**Returns:** `AnthropicMessageResponse`
-
----
-
-### streamOpenAIToAnthropic
-
-Transforms an OpenAI streaming response to Anthropic SSE format.
-
-```typescript
-import { streamOpenAIToAnthropic } from 'claude-adapter';
-
-await streamOpenAIToAnthropic(openaiStream, fastifyReply, 'claude-4-opus');
-```
-
----
-
-## Error Responses
-
-All errors follow Anthropic's error format:
+## Errors
 
 ```json
 {
+  "type": "error",
   "error": {
     "type": "invalid_request_error",
     "message": "Description of the error"
@@ -191,57 +136,32 @@ All errors follow Anthropic's error format:
 }
 ```
 
-**Error Types:**
-| Status Code | Error Type |
-| ----------- | ----------------------- |
-| 400 | `invalid_request_error` |
-| 401 | `authentication_error` |
-| 403 | `permission_error` |
-| 404 | `not_found_error` |
-| 429 | `rate_limit_error` |
-| 500 | `api_error` |
+| Status   | Error type              |
+| -------- | ----------------------- |
+| 400, 413 | `invalid_request_error` |
+| 401      | `authentication_error`  |
+| 403      | `permission_error`      |
+| 404      | `not_found_error`       |
+| 429      | `rate_limit_error`      |
+| 500+     | `api_error`             |
 
----
+## Configuration
 
-## Configuration Types
+The existing configuration file remains compatible:
 
-```typescript
-interface AdapterConfig {
-  baseUrl: string; // OpenAI-compatible API base URL
-  apiKey: string; // API key for authentication
-  models: {
-    opus: string; // Model for Claude Opus requests
-    sonnet: string; // Model for Claude Sonnet requests
-    haiku: string; // Model for Claude Haiku requests
-  };
-  upstreamHeaders?: Record<string, string>; // Default headers sent to the upstream OpenAI-compatible API
+```json
+{
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKey": "...",
+  "models": {
+    "opus": "gpt-4.1",
+    "sonnet": "gpt-4.1",
+    "haiku": "gpt-4.1-mini"
+  },
+  "upstreamHeaders": {
+    "HTTP-Referer": "https://example.com"
+  }
 }
 ```
 
----
-
-## Example Usage
-
-```typescript
-import { createServer } from 'claude-adapter';
-
-const config = {
-  baseUrl: 'https://api.openai.com/v1',
-  apiKey: process.env.OPENAI_API_KEY,
-  models: {
-    opus: 'gpt-4-turbo',
-    sonnet: 'gpt-4',
-    haiku: 'gpt-3.5-turbo',
-  },
-  upstreamHeaders: {
-    'HTTP-Referer': 'https://example.com',
-    'X-Title': 'Claude Adapter',
-    'User-Agent': 'Claude-Adapter/2.2',
-  },
-};
-
-const server = createServer(config);
-await server.start(3080);
-
-// Server now accepts Anthropic API requests at http://localhost:3080
-```
+The CLI selects a native binary, waits for its ready record, and then updates Claude settings. The proxy chooses the requested port or the next available port atomically.

@@ -1,0 +1,203 @@
+{
+  "generatedAt": "2026-09-19T05:14:50.366Z",
+  "machine": { "platform": "darwin", "arch": "arm64", "cpus": 24 },
+  "method": "release builds, deterministic local upstream, warm-up, median of 5 runs",
+  "repetitions": 5,
+  "wholeRun": {
+    "node": {
+      "realSeconds": 5.57,
+      "userSeconds": 5.43,
+      "systemSeconds": 0.74,
+      "maxRssBytes": 359350272
+    },
+    "rust": {
+      "realSeconds": 4.02,
+      "userSeconds": 4.5,
+      "systemSeconds": 1.77,
+      "maxRssBytes": 245334016
+    }
+  },
+  "medianResults": [
+    {
+      "target": "node",
+      "scenario": "non-streaming",
+      "concurrency": 1,
+      "throughput": 553.78,
+      "p50Ms": 2.05,
+      "p95Ms": 2.28,
+      "p99Ms": 2.57,
+      "firstContentP50Ms": 2.05,
+      "errors": 0
+    },
+    {
+      "target": "rust",
+      "scenario": "non-streaming",
+      "concurrency": 1,
+      "throughput": 439.32,
+      "p50Ms": 2.26,
+      "p95Ms": 2.83,
+      "p99Ms": 3.63,
+      "firstContentP50Ms": 2.25,
+      "errors": 0
+    },
+    {
+      "target": "node",
+      "scenario": "streaming",
+      "concurrency": 1,
+      "throughput": 559.25,
+      "p50Ms": 2.13,
+      "p95Ms": 2.43,
+      "p99Ms": 2.89,
+      "firstContentP50Ms": 2.12,
+      "errors": 0
+    },
+    {
+      "target": "rust",
+      "scenario": "streaming",
+      "concurrency": 1,
+      "throughput": 419.22,
+      "p50Ms": 2.26,
+      "p95Ms": 3.24,
+      "p99Ms": 4.0,
+      "firstContentP50Ms": 2.17,
+      "errors": 0
+    },
+    {
+      "target": "node",
+      "scenario": "non-streaming",
+      "concurrency": 10,
+      "throughput": 3209.71,
+      "p50Ms": 2.96,
+      "p95Ms": 4.09,
+      "p99Ms": 4.11,
+      "firstContentP50Ms": 2.96,
+      "errors": 0
+    },
+    {
+      "target": "rust",
+      "scenario": "non-streaming",
+      "concurrency": 10,
+      "throughput": 5596.35,
+      "p50Ms": 2.0,
+      "p95Ms": 2.51,
+      "p99Ms": 2.61,
+      "firstContentP50Ms": 2.0,
+      "errors": 0
+    },
+    {
+      "target": "node",
+      "scenario": "streaming",
+      "concurrency": 10,
+      "throughput": 3175.99,
+      "p50Ms": 3.06,
+      "p95Ms": 4.25,
+      "p99Ms": 4.25,
+      "firstContentP50Ms": 3.05,
+      "errors": 0
+    },
+    {
+      "target": "rust",
+      "scenario": "streaming",
+      "concurrency": 10,
+      "throughput": 4785.7,
+      "p50Ms": 2.46,
+      "p95Ms": 2.88,
+      "p99Ms": 3.03,
+      "firstContentP50Ms": 2.23,
+      "errors": 0
+    },
+    {
+      "target": "node",
+      "scenario": "non-streaming",
+      "concurrency": 50,
+      "throughput": 4252.48,
+      "p50Ms": 11.31,
+      "p95Ms": 12.67,
+      "p99Ms": 14.02,
+      "firstContentP50Ms": 11.31,
+      "errors": 0
+    },
+    {
+      "target": "rust",
+      "scenario": "non-streaming",
+      "concurrency": 50,
+      "throughput": 10710.85,
+      "p50Ms": 4.2,
+      "p95Ms": 6.22,
+      "p99Ms": 6.86,
+      "firstContentP50Ms": 4.2,
+      "errors": 0
+    },
+    {
+      "target": "node",
+      "scenario": "streaming",
+      "concurrency": 50,
+      "throughput": 3742.5,
+      "p50Ms": 13.05,
+      "p95Ms": 14.6,
+      "p99Ms": 14.94,
+      "firstContentP50Ms": 13.04,
+      "errors": 0
+    },
+    {
+      "target": "rust",
+      "scenario": "streaming",
+      "concurrency": 50,
+      "throughput": 8658.75,
+      "p50Ms": 5.3,
+      "p95Ms": 7.68,
+      "p99Ms": 8.81,
+      "firstContentP50Ms": 4.41,
+      "errors": 0
+    },
+    {
+      "target": "node",
+      "scenario": "non-streaming",
+      "concurrency": 100,
+      "throughput": 4982.43,
+      "p50Ms": 18.85,
+      "p95Ms": 23.93,
+      "p99Ms": 23.96,
+      "firstContentP50Ms": 18.85,
+      "errors": 0
+    },
+    {
+      "target": "rust",
+      "scenario": "non-streaming",
+      "concurrency": 100,
+      "throughput": 10820.83,
+      "p50Ms": 8.32,
+      "p95Ms": 12.18,
+      "p99Ms": 13.86,
+      "firstContentP50Ms": 8.32,
+      "errors": 0
+    },
+    {
+      "target": "node",
+      "scenario": "streaming",
+      "concurrency": 100,
+      "throughput": 4515.07,
+      "p50Ms": 21.6,
+      "p95Ms": 23.23,
+      "p99Ms": 24.57,
+      "firstContentP50Ms": 21.6,
+      "errors": 0
+    },
+    {
+      "target": "rust",
+      "scenario": "streaming",
+      "concurrency": 100,
+      "throughput": 9034.03,
+      "p50Ms": 10.52,
+      "p95Ms": 14.3,
+      "p99Ms": 15.63,
+      "firstContentP50Ms": 8.38,
+      "errors": 0
+    }
+  ],
+  "notes": [
+    "Whole-run CPU and RSS include the shared benchmark harness and mock upstream.",
+    "At concurrency 50-100 Rust delivered about 2-2.5x throughput with lower latency; whole-run max RSS fell by about 32%.",
+    "Concurrency 1 differences are sub-millisecond and are not treated as a user-visible regression."
+  ]
+}

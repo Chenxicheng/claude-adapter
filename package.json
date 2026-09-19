@@ -1,23 +1,24 @@
 {
   "name": "claude-adapter",
-  "version": "1.2.2",
+  "version": "2.0.0",
   "description": "Proxy to convert Anthropic API requests to OpenAI format for Claude Code",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "bin": {
     "claude-adapter": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
+    "build:native": "cargo build --manifest-path native/Cargo.toml --release",
     "build:release": "npm run build && npm run obfuscate:dist",
     "start": "node dist/cli.js",
     "dev": "npx ts-node src/cli.ts",
     "test": "jest",
+    "test:native": "cargo test --manifest-path native/Cargo.toml",
     "lint": "eslint src/**/*.ts tests/**/*.ts",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "lint:native": "cargo fmt --manifest-path native/Cargo.toml --check && cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings",
     "obfuscate:dist": "node scripts/obfuscate-dist.mjs",
     "release:assets": "node scripts/build-release-assets.mjs",
-    "prepublishOnly": "npm test && npm run build:release"
+    "prepublishOnly": "npm test -- --runInBand && npm run test:native && npm run lint && npm run lint:native && npm run build:release"
   },
   "files": [
     "dist",
@@ -51,12 +52,16 @@
   },
   "homepage": "https://claude-adapter.pages.dev/",
   "dependencies": {
-    "@anthropic-ai/sdk": "0.71.2",
     "chalk": "^4.1.2",
     "commander": "^12.1.0",
-    "fastify": "^5.1.0",
-    "inquirer": "^8.2.6",
-    "openai": "4.76.0"
+    "inquirer": "^8.2.6"
+  },
+  "optionalDependencies": {
+    "claude-adapter-darwin-arm64": "2.0.0",
+    "claude-adapter-darwin-x64": "2.0.0",
+    "claude-adapter-linux-arm64-gnu": "2.0.0",
+    "claude-adapter-linux-x64-gnu": "2.0.0",
+    "claude-adapter-win32-x64-msvc": "2.0.0"
   },
   "devDependencies": {
     "@types/inquirer": "^9.0.7",

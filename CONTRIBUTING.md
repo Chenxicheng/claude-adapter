@@ -38,21 +38,24 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 - Node.js 20.0.0 or higher
 - npm 9.0.0 or higher
+- Rust 1.98.1 with `rustfmt` and `clippy`
 - Git
 
 ### Development Setup
 
 1. **Fork the repository**
-   
+
    Click the "Fork" button on GitHub to create your own copy.
 
 2. **Clone your fork**
+
    ```bash
    git clone https://github.com/YOUR_USERNAME/claude-adapter.git
    cd claude-adapter
    ```
 
 3. **Install dependencies**
+
    ```bash
    npm install
    ```
@@ -70,25 +73,27 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 ```
 claude-adapter/
+├── native/                 # Rust proxy, protocol conversion, streaming, JSONL
+├── npm/                    # Platform-specific native npm packages
 ├── src/
-│   ├── cli.ts              # CLI entry point
-│   ├── index.ts            # Library exports
-│   ├── types/              # TypeScript type definitions
-│   ├── converters/         # Request/response converters
-│   ├── server/             # Express proxy server
-│   └── utils/              # Utility functions
-├── tests/                  # Test files
+│   ├── cli.ts              # CLI/configuration entry point
+│   └── native.ts           # Native package selection and process lifecycle
+├── tests/                  # Node CLI tests
+├── bench/                  # Deterministic parity/performance harness
 └── package.json
 ```
 
 ### Development Workflow
 
 1. **Run in development mode**
+
    ```bash
+   npm run build:native
    npm run dev
    ```
 
 2. **Run tests continuously**
+
    ```bash
    npm test -- --watch
    ```
@@ -110,16 +115,20 @@ All changes must include appropriate tests.
 # Run all tests
 npm test
 
+# Run native tests
+npm run test:native
+
 # Run tests with coverage
 npm test -- --coverage
 
 # Run specific test file
-npm test -- tests/request.test.ts
+npm test -- tests/native.test.ts
 ```
 
 ### Writing Tests
 
 - Place tests in the `tests/` directory
+- Place Rust unit tests next to their implementation in `native/src/`
 - Name test files with `.test.ts` suffix
 - Follow existing test patterns and conventions
 
@@ -140,6 +149,7 @@ npm test -- tests/request.test.ts
 - [ ] Documentation updated
 - [ ] CHANGELOG.md updated
 - [ ] No lint errors
+- [ ] `cargo fmt`, Clippy, and Rust tests pass
 
 ---
 
@@ -151,6 +161,12 @@ npm test -- tests/request.test.ts
 - Prefer `const` over `let`
 - Use explicit type annotations for function parameters and returns
 - Use interfaces for object shapes
+
+### Rust
+
+- Run `cargo fmt` and keep Clippy warning-free
+- Keep protocol behavior in `native/src/converter.rs` and streaming in `native/src/stream.rs`
+- Do not add a Node proxy fallback
 
 ### Naming Conventions
 

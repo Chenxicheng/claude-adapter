@@ -1,0 +1,188 @@
+[
+  {
+    "name": "simple text",
+    "input": {
+      "model": "gpt-4",
+      "max_tokens": 100,
+      "messages": [{ "role": "user", "content": "Hello" }]
+    },
+    "expected": {
+      "model": "gpt-4",
+      "messages": [{ "role": "user", "content": "Hello" }],
+      "max_tokens": 100
+    }
+  },
+  {
+    "name": "billing header and streaming usage",
+    "input": {
+      "model": "gpt-4",
+      "max_tokens": 64,
+      "stream": true,
+      "system": "x-anthropic-billing-header: ignored\nKeep this",
+      "messages": [{ "role": "user", "content": "Hello" }]
+    },
+    "expected": {
+      "model": "gpt-4",
+      "messages": [
+        { "role": "system", "content": "Keep this" },
+        { "role": "user", "content": "Hello" }
+      ],
+      "max_tokens": 64,
+      "stream": true,
+      "stream_options": { "include_usage": true }
+    }
+  },
+  {
+    "name": "tool call and result",
+    "input": {
+      "model": "gpt-4",
+      "max_tokens": 100,
+      "messages": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_123",
+              "name": "weather",
+              "input": { "city": "Paris" }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [{ "type": "tool_result", "tool_use_id": "toolu_123", "content": "Sunny" }]
+        }
+      ]
+    },
+    "expected": {
+      "model": "gpt-4",
+      "messages": [
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "toolu_123",
+              "type": "function",
+              "function": { "name": "weather", "arguments": "{\"city\":\"Paris\"}" }
+            }
+          ]
+        },
+        { "role": "tool", "tool_call_id": "toolu_123", "content": "Sunny" }
+      ],
+      "max_tokens": 100
+    }
+  },
+  {
+    "name": "gpt5 reasoning",
+    "input": {
+      "model": "gpt-5.2",
+      "max_tokens": 100,
+      "thinking": { "type": "enabled", "budget_tokens": 8000 },
+      "messages": [{ "role": "user", "content": "Think" }]
+    },
+    "expected": {
+      "model": "gpt-5.2",
+      "messages": [{ "role": "user", "content": "Think" }],
+      "max_completion_tokens": 100,
+      "reasoning_effort": "medium"
+    }
+  },
+  {
+    "name": "empty tools omitted",
+    "input": {
+      "model": "gpt-4",
+      "max_tokens": 100,
+      "tools": [],
+      "messages": [{ "role": "user", "content": "Hello" }]
+    },
+    "expected": {
+      "model": "gpt-4",
+      "messages": [{ "role": "user", "content": "Hello" }],
+      "max_tokens": 100
+    }
+  },
+  {
+    "name": "tool choice none",
+    "input": {
+      "model": "gpt-4",
+      "max_tokens": 10,
+      "messages": [{ "role": "user", "content": "Hello" }],
+      "tool_choice": { "type": "none" }
+    },
+    "expected": {
+      "model": "gpt-4",
+      "messages": [{ "role": "user", "content": "Hello" }],
+      "max_tokens": 10,
+      "tool_choice": "none"
+    }
+  },
+  {
+    "name": "tool choice auto",
+    "input": {
+      "model": "gpt-4",
+      "max_tokens": 10,
+      "messages": [{ "role": "user", "content": "Hello" }],
+      "tool_choice": { "type": "auto" }
+    },
+    "expected": {
+      "model": "gpt-4",
+      "messages": [{ "role": "user", "content": "Hello" }],
+      "max_tokens": 10,
+      "tool_choice": "auto"
+    }
+  },
+  {
+    "name": "tool choice any",
+    "input": {
+      "model": "gpt-4",
+      "max_tokens": 10,
+      "messages": [{ "role": "user", "content": "Hello" }],
+      "tool_choice": { "type": "any", "disable_parallel_tool_use": true }
+    },
+    "expected": {
+      "model": "gpt-4",
+      "messages": [{ "role": "user", "content": "Hello" }],
+      "max_tokens": 10,
+      "tool_choice": "required",
+      "parallel_tool_calls": false
+    }
+  },
+  {
+    "name": "named strict custom tool",
+    "input": {
+      "model": "gpt-4",
+      "max_tokens": 10,
+      "messages": [{ "role": "assistant", "content": "{" }],
+      "tools": [
+        {
+          "type": "custom",
+          "name": "lookup",
+          "description": "Lookup a value",
+          "input_schema": { "type": "object" },
+          "strict": true,
+          "cache_control": { "type": "ephemeral" }
+        }
+      ],
+      "tool_choice": { "type": "tool", "name": "lookup" }
+    },
+    "expected": {
+      "model": "gpt-4",
+      "messages": [{ "role": "assistant", "content": "{" }],
+      "max_tokens": 10,
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "lookup",
+            "description": "Lookup a value",
+            "parameters": { "type": "object" },
+            "strict": true
+          }
+        }
+      ],
+      "tool_choice": { "type": "function", "function": { "name": "lookup" } }
+    }
+  }
+]

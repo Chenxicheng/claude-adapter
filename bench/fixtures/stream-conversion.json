@@ -1,0 +1,47 @@
+{
+  "chunks": [
+    {
+      "model": "mock-model",
+      "choices": [
+        {
+          "delta": { "reasoning_content": "think" },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "choices": [
+        {
+          "delta": { "content": "answer" },
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "choices": [],
+      "usage": {
+        "prompt_tokens": 3,
+        "completion_tokens": 4,
+        "total_tokens": 7,
+        "completion_tokens_details": { "reasoning_tokens": 2 }
+      }
+    }
+  ],
+  "eventTypes": [
+    "message_start",
+    "content_block_start",
+    "content_block_delta",
+    "content_block_stop",
+    "message_delta",
+    "message_stop"
+  ],
+  "deltaTypes": ["text_delta"],
+  "finalUsage": {
+    "input_tokens": 3,
+    "output_tokens": 4,
+    "cache_creation_input_tokens": null,
+    "cache_read_input_tokens": null,
+    "output_tokens_details": { "thinking_tokens": 2 },
+    "server_tool_use": null
+  }
+}

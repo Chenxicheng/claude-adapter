@@ -7,62 +7,69 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    
+  node:
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         node-version: [20.x, 22.x]
-    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-          cache: 'npm'
+          cache: npm
+      - run: npm ci
+      - run: npm test -- --runInBand
+      - run: npm run lint
+      - run: npm run build
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run linter
-        run: npm run lint
-        continue-on-error: true
-
-      - name: Run tests
-        run: npm test
-
-      - name: Build
-        run: npm run build
-
-  build:
-    name: Build Check
-    runs-on: ubuntu-latest
-    needs: test
-    
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --manifest-path native/Cargo.toml --check
+      - run: cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path native/Cargo.toml
+      - run: cargo build --manifest-path native/Cargo.toml --release
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+  native-platforms:
+    name: Native ${{ matrix.package }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            package: darwin-arm64
+          - runner: macos-15-intel
+            package: darwin-x64
+          - runner: ubuntu-24.04
+            package: linux-x64-gnu
+          - runner: ubuntu-24.04-arm
+            package: linux-arm64-gnu
+          - runner: windows-2025
+            package: win32-x64-msvc
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '20.x'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Check dist folder
+          node-version: 20.x
+          cache: npm
+      - run: npm ci
+      - run: cargo test --manifest-path native/Cargo.toml
+      - run: cargo build --manifest-path native/Cargo.toml --release
+      - name: Verify native binary
+        shell: bash
         run: |
-          if [ ! -d "dist" ]; then
-            echo "Build failed: dist folder not found"
-            exit 1
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            native/target/release/claude-adapter-native.exe --version
+          else
+            native/target/release/claude-adapter-native --version
           fi
-          echo "Build successful"
+      - name: Package and clean-install current platform
+        env:
+          CLEAN_INSTALL: '1'
+        run: npm run release:assets

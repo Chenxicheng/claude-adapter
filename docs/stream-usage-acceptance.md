@@ -17,6 +17,7 @@ Official references:
 | ------------------------ | --------------------- |
 | `prompt_tokens`          | `input_tokens`        |
 | `completion_tokens`      | `output_tokens`       |
+| `completion_tokens_details.reasoning_tokens` | `output_tokens_details.thinking_tokens` |
 
 `prompt_tokens_details.cached_tokens` is not mapped to Anthropic response usage
 for the OpenAI Chat Completions path. It remains available in raw upstream usage
@@ -30,18 +31,18 @@ records for cache-hit and cost analysis.
   `input_tokens` or exposed as Anthropic `cache_read_input_tokens`, because this
   adapter prioritizes Claude Code context-window safety over cache billing
   display compatibility.
-- Native OpenAI Chat Completions usage does not include Anthropic
-  `cache_creation_input_tokens`, so the adapter must not infer cache creation
-  tokens from OpenAI usage.
+- Native OpenAI Chat Completions usage does not include Anthropic cache token
+  semantics, so `cache_creation_input_tokens` and `cache_read_input_tokens`
+  are `null`; the adapter must not infer either value from OpenAI usage.
 - OpenAI `completion_tokens_details.reasoning_tokens` is a breakdown within
   `completion_tokens`; it must not be subtracted from Anthropic `output_tokens`.
-- If no upstream usage chunk arrives, final `message_delta.usage` must not emit a synthetic `input_tokens: 0`.
+- If no upstream usage chunk arrives, final `message_delta.usage.input_tokens` is `null`, not a synthetic zero.
 - If the final upstream usage chunk reports `prompt_tokens: 0`, final `message_delta.usage` must preserve the real `input_tokens: 0`.
 - `message_start` remains the first event and is not delayed waiting for final usage.
 - `message_start.message.usage` remains a transport compatibility placeholder and is not recorded.
 - Streaming usage is recorded once at stream end with `usageStatus: "complete"` or `usageStatus: "missing_final_chunk"`.
 - SSE event order remains unchanged.
-- Text streaming, tool calls, stop reason mapping, and non-stream response conversion remain unchanged.
+- Text streaming and tool calls retain Anthropic event order. Streaming and non-streaming responses use the same finish-reason mapping.
 
 ## Non-Goals
 
@@ -68,7 +69,7 @@ Native stream must satisfy:
 
 - `message_delta.usage.input_tokens === 20`
 - `message_delta.usage.output_tokens === 10`
-- `message_delta.usage.cache_read_input_tokens === undefined`
+- `message_delta.usage.cache_read_input_tokens === null`
 - `message_start` is still the first event
 
 OpenAI completion usage breakdown must not reduce Anthropic output tokens:
@@ -90,10 +91,11 @@ Native stream must then satisfy:
 
 - `message_delta.usage.input_tokens === 120`
 - `message_delta.usage.output_tokens === 12`
-- `message_delta.usage.cache_read_input_tokens === undefined`
-- `message_delta.usage.cache_creation_input_tokens === undefined`
+- `message_delta.usage.cache_read_input_tokens === null`
+- `message_delta.usage.cache_creation_input_tokens === null`
+- `message_delta.usage.output_tokens_details.thinking_tokens === 7`
 
-Native stream must also omit `message_delta.usage.input_tokens` when no upstream usage chunk arrives, while preserving a real upstream `prompt_tokens: 0`.
+Native stream must set `message_delta.usage.input_tokens` to `null` when no upstream usage chunk arrives, while preserving a real upstream `prompt_tokens: 0`.
 
 Usage recording must satisfy:
 
@@ -106,28 +108,29 @@ Usage recording must satisfy:
   when upstream provides it.
 - `message_start.message.usage` placeholder values are never persisted as token usage.
 
-Reasoning trace compatibility must satisfy:
+Reasoning privacy and integrity must satisfy:
 
-- Upstream `delta.reasoning` or `delta.reasoning_content` chunks are displayed as
-  Anthropic-compatible `thinking_delta` events.
-- The adapter does not emit fake Anthropic `signature` / `signature_delta`
-  fields for third-party reasoning traces.
+- Upstream `reasoning` and `reasoning_content` text is neither displayed nor recorded.
+- No `thinking`, `thinking_delta`, `signature`, or `signature_delta` is synthesized.
+- A reasoning-only response produces an upstream protocol error.
+- Streamed tool arguments must form one complete JSON object; malformed or scalar arguments produce an `error` SSE event without a successful `message_delta` or `message_stop`.
 
 ## Verification Commands
 
 ```bash
-npm test -- --runTestsByPath tests/streaming.test.ts tests/response.test.ts tests/request.test.ts tests/tokenUsage.test.ts tests/handlers.test.ts --runInBand
+cargo test --manifest-path native/Cargo.toml stream::tests -- --nocapture
+cargo test --manifest-path native/Cargo.toml converter::tests -- --nocapture
 npm run build
 npm run lint
+cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
 ```
 
 ## Review Checklist
 
-- Diff stays focused on model-family request conversion, usage completion, types, tests, and documentation.
+- Diff stays focused on native request conversion, usage completion, tests, and documentation.
 - Stream first event is still not delayed.
 - Native stream exposes final usage consistently.
-- Non-stream response conversion maps upstream reasoning traces before text/tool blocks.
+- Non-stream and stream conversion omit upstream reasoning text while preserving its token breakdown.
 - Usage records distinguish complete usage from a missing final usage chunk.
-- Third-party reasoning traces are displayed without fake Anthropic signatures.
-- Lint infrastructure changes are reviewed as a separate atomic change from usage behavior.
+- Third-party reasoning traces are never exposed or logged.
 - No secrets, real network calls, or compatibility branches are introduced.
