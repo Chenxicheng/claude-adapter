@@ -3,7 +3,7 @@ import { ChildProcess, spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
 import { resolve } from 'node:path';
-import { nativePackageForPlatform, resolveNativeBinary, startNativeServer } from '../src/native';
+import { nativeTargetForPlatform, resolveNativeBinary, startNativeServer } from '../src/native';
 
 jest.mock('node:child_process', () => ({
   ...jest.requireActual('node:child_process'),
@@ -16,6 +16,8 @@ jest.mock('node:fs', () => ({
 
 const spawnMock = jest.mocked(spawn);
 const existsSyncMock = jest.mocked(existsSync);
+const originalPlatform = process.platform;
+const originalArch = process.arch;
 
 interface FakeChild extends ChildProcess {
   stdout: PassThrough;
@@ -57,48 +59,48 @@ beforeEach(() => {
 
 afterEach(() => {
   jest.useRealTimers();
+  Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  Object.defineProperty(process, 'arch', { value: originalArch, configurable: true });
 });
 
 describe('native platform selection', () => {
   it.each([
-    ['darwin', 'arm64', 'claude-adapter-darwin-arm64'],
-    ['darwin', 'x64', 'claude-adapter-darwin-x64'],
-    ['linux', 'arm64', 'claude-adapter-linux-arm64-gnu'],
-    ['linux', 'x64', 'claude-adapter-linux-x64-gnu'],
-    ['win32', 'x64', 'claude-adapter-win32-x64-msvc'],
-  ] as const)('maps %s-%s to its package', (platform, arch, expected) => {
-    expect(nativePackageForPlatform(platform, arch)).toBe(expected);
+    ['linux', 'x64', 'linux-x64-gnu', 'claude-adapter-native'],
+    ['win32', 'x64', 'win32-x64-msvc', 'claude-adapter-native.exe'],
+  ] as const)('maps %s-%s to its bundled binary', (platform, arch, directory, binary) => {
+    expect(nativeTargetForPlatform(platform, arch)).toEqual({ directory, binary });
   });
 
   it('rejects unsupported targets with an actionable message', () => {
-    expect(() => nativePackageForPlatform('win32', 'arm64')).toThrow(
-      'Supported platforms: macOS arm64/x64, Linux glibc arm64/x64, and Windows x64.'
+    expect(() => nativeTargetForPlatform('darwin', 'arm64')).toThrow(
+      'Supported platforms: Linux glibc x64 and Windows x64.'
     );
   });
 
-  it('explains how to recover when the platform package is missing', () => {
+  it('explains how to recover when the bundled binary is missing', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
     existsSyncMock.mockReturnValue(false);
     expect(() => resolveNativeBinary()).toThrow(
-      /Reinstall with "npm install -g claude-adapter@2\.0\.0".*Supported platforms:/
+      /Offline package is missing bin\/win32-x64-msvc\/claude-adapter-native\.exe.*Reinstall claude-adapter@2\.0\.0/
     );
   });
 
-  it.each([
-    ['darwin-arm64', 'darwin', 'arm64', 'claude-adapter-native'],
-    ['darwin-x64', 'darwin', 'x64', 'claude-adapter-native'],
-    ['linux-arm64-gnu', 'linux', 'arm64', 'claude-adapter-native'],
-    ['linux-x64-gnu', 'linux', 'x64', 'claude-adapter-native'],
-    ['win32-x64-msvc', 'win32', 'x64', 'claude-adapter-native.exe'],
-  ])('publishes correct metadata for %s', (directory, os, cpu, binary) => {
-    const manifest = JSON.parse(readFileSync(resolve('npm', directory, 'package.json'), 'utf8'));
+  it('publishes one offline package without platform dependencies', () => {
+    const manifest = JSON.parse(readFileSync(resolve('package.json'), 'utf8'));
     expect(manifest.version).toBe('2.0.0');
-    expect(manifest.os).toEqual([os]);
-    expect(manifest.cpu).toEqual([cpu]);
-    expect(manifest.files).toEqual([`bin/${binary}`]);
+    expect(manifest.files).toEqual(['dist', 'bin', 'LICENSE']);
+    expect(manifest.optionalDependencies).toBeUndefined();
+    expect(manifest.bundleDependencies).toEqual(['chalk', 'commander', 'inquirer']);
   });
 });
 
 describe('native process lifecycle', () => {
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+  });
+
   it('accepts one ready record and clears the shutdown timeout after a fast exit', async () => {
     jest.useFakeTimers();
     const child = createFakeChild();

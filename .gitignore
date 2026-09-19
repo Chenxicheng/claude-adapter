@@ -6,7 +6,7 @@ dist/
 build/
 release/
 native/target/
-npm/*/bin/
+bin/
 
 # IDE
 .idea/

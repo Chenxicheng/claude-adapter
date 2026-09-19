@@ -17,17 +17,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
-            package: darwin-arm64
-            binary: claude-adapter-native
-          - runner: macos-15-intel
-            package: darwin-x64
-            binary: claude-adapter-native
           - runner: ubuntu-24.04
             package: linux-x64-gnu
-            binary: claude-adapter-native
-          - runner: ubuntu-24.04-arm
-            package: linux-arm64-gnu
             binary: claude-adapter-native
           - runner: windows-2025
             package: win32-x64-msvc
@@ -64,15 +55,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Stage platform binaries
+      - name: Stage offline binaries
         run: |
-          mkdir -p npm/darwin-arm64/bin npm/darwin-x64/bin npm/linux-arm64-gnu/bin npm/linux-x64-gnu/bin npm/win32-x64-msvc/bin
-          cp artifacts/native-darwin-arm64/claude-adapter-native npm/darwin-arm64/bin/
-          cp artifacts/native-darwin-x64/claude-adapter-native npm/darwin-x64/bin/
-          cp artifacts/native-linux-arm64-gnu/claude-adapter-native npm/linux-arm64-gnu/bin/
-          cp artifacts/native-linux-x64-gnu/claude-adapter-native npm/linux-x64-gnu/bin/
-          cp artifacts/native-win32-x64-msvc/claude-adapter-native.exe npm/win32-x64-msvc/bin/
-          chmod +x npm/darwin-*/bin/* npm/linux-*/bin/*
+          mkdir -p bin/linux-x64-gnu bin/win32-x64-msvc
+          cp artifacts/native-linux-x64-gnu/claude-adapter-native bin/linux-x64-gnu/
+          cp artifacts/native-win32-x64-msvc/claude-adapter-native.exe bin/win32-x64-msvc/
+          chmod +x bin/linux-x64-gnu/claude-adapter-native
       - name: Validate release tag
         env:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -88,8 +76,6 @@ jobs:
       - run: cargo test --manifest-path native/Cargo.toml
       - name: Build package artifacts and clean-install test
         env:
-          RELEASE_BINARIES_STAGED: '1'
-          REQUIRE_ALL_PLATFORMS: '1'
           CLEAN_INSTALL: '1'
         run: npm run release:assets
       - name: Create GitHub release

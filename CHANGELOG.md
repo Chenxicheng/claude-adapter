@@ -14,7 +14,8 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ### Added
 
-- **Native proxy**: Moved HTTP, protocol conversion, SSE, tools, usage, and errors to a Rust service shipped through platform-specific npm packages.
+- **Native proxy**: Moved HTTP, protocol conversion, SSE, tools, usage, and errors to a Rust service embedded in one offline npm package.
+- **Offline distribution**: Bundled Linux x64 and Windows x64 binaries plus production JavaScript dependencies into one transferable tarball.
 - **Protocol conversion**: Preserved assistant prefills, completed Anthropic tool-choice mapping, and now rejects unsupported roles, blocks, server tools, cache-only requests, and malformed upstream tool calls instead of silently dropping or approximating them.
 - **Responses**: Unified streaming and non-streaming finish reasons, added refusal `stop_details` and current usage fields, and kept third-party reasoning text private while preserving its token breakdown.
 - **Vision input**: Added ordered Base64 and URL image conversion, including explicitly associated tool-result screenshots.

@@ -2,7 +2,7 @@
 
 ## Product boundary
 
-`claude-adapter` 2.0 is a CLI product. npm owns installation, configuration prompts, Claude settings updates, native binary selection, startup feedback, and signal forwarding. The Rust binary owns the listener, validation, upstream HTTP, Anthropic/OpenAI conversion, SSE, tools, usage/error storage, and runtime logging. There is no Node proxy fallback or JavaScript library API.
+`claude-adapter` 2.0 is a CLI product. One self-contained npm package owns offline installation, configuration prompts, embedded native binary selection, Claude settings updates, startup feedback, and signal forwarding. The Rust binary owns the listener, validation, upstream HTTP, Anthropic/OpenAI conversion, SSE, tools, usage/error storage, and runtime logging. There is no Node proxy fallback or JavaScript library API.
 
 The existing `~/.claude-adapter/config.json` shape and CLI flags remain valid. The native process receives `--config <absolute-path>` and `--port <preferred>`, binds the first available loopback port, then prints one `CLAUDE_ADAPTER_READY=<json>` line after the listener is active. Node forwards Unix signals directly; on Windows it requests the same graceful drain through the child stdin pipe before using the 10-second forced-stop fallback.
 
@@ -29,6 +29,6 @@ A deterministic local upstream and shared fixtures compare Node 1.2 behavior wit
 
 `bench/baseline-2026-09-19.json` preserves the pre-cutover Node/Rust comparison. The current harness also runs tools, reasoning, upstream-error, slow-reader, and downstream-disconnect preflights before collecting text and SSE performance samples; `BENCH_UPSTREAM_DELAY_MS` controls deterministic upstream delay.
 
-The first release targets macOS arm64/x64, Linux glibc arm64/x64, and Windows x64. musl, Windows arm64, Responses API, N-API, image proxying, and automatic model switching are out of scope.
+The first release embeds Linux glibc x64 and Windows x64 binaries. macOS, Linux arm64, musl, Windows arm64, Responses API, N-API, image proxying, and automatic model switching are out of scope.
 
-Release CI builds and tests each target, packages five platform `.tgz` files plus the CLI-only main package, and creates GitHub release artifacts without publishing to npm. Publish the five platform packages first, then the same-version main package.
+Release CI builds and tests both targets, bundles their binaries and all production JavaScript dependencies into one `claude-adapter-2.0.0.tgz`, verifies an empty-cache `npm install --offline`, and creates the GitHub release without publishing to npm automatically.

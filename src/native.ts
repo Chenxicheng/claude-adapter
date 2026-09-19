@@ -7,12 +7,14 @@ const STARTUP_TIMEOUT_MS = 10_000;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 const READY_PREFIX = 'CLAUDE_ADAPTER_READY=';
 
-const PLATFORM_PACKAGES: Record<string, string> = {
-  'darwin-arm64': 'claude-adapter-darwin-arm64',
-  'darwin-x64': 'claude-adapter-darwin-x64',
-  'linux-arm64': 'claude-adapter-linux-arm64-gnu',
-  'linux-x64': 'claude-adapter-linux-x64-gnu',
-  'win32-x64': 'claude-adapter-win32-x64-msvc',
+interface NativeTarget {
+  directory: string;
+  binary: string;
+}
+
+const NATIVE_TARGETS: Record<string, NativeTarget> = {
+  'linux-x64': { directory: 'linux-x64-gnu', binary: 'claude-adapter-native' },
+  'win32-x64': { directory: 'win32-x64-msvc', binary: 'claude-adapter-native.exe' },
 };
 
 export interface NativeServer {
@@ -21,39 +23,35 @@ export interface NativeServer {
   stop(signal?: NodeJS.Signals): Promise<void>;
 }
 
-export function nativePackageForPlatform(
+export function nativeTargetForPlatform(
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch
-): string {
-  const packageName = PLATFORM_PACKAGES[`${platform}-${arch}`];
-  if (!packageName) {
+): NativeTarget {
+  const target = NATIVE_TARGETS[`${platform}-${arch}`];
+  if (!target) {
     throw new Error(
-      `Unsupported platform ${platform}-${arch}. Supported platforms: macOS arm64/x64, Linux glibc arm64/x64, and Windows x64.`
+      `Unsupported platform ${platform}-${arch}. Supported platforms: Linux glibc x64 and Windows x64.`
     );
   }
-  if (platform === 'linux' && !hasGlibc()) {
+  if (platform === process.platform && platform === 'linux' && !hasGlibc()) {
     throw new Error('Linux musl is not supported yet; use a glibc-based distribution.');
   }
-  return packageName;
+  return target;
 }
 
 export function resolveNativeBinary(): string {
-  const binaryName =
-    process.platform === 'win32' ? 'claude-adapter-native.exe' : 'claude-adapter-native';
-  const packageName = nativePackageForPlatform();
-  try {
-    return require.resolve(`${packageName}/bin/${binaryName}`);
-  } catch {
-    const developmentBinary = resolve(__dirname, '..', 'native', 'target', 'release', binaryName);
-    if (existsSync(developmentBinary)) {
-      return developmentBinary;
-    }
-    throw new Error(
-      `Native package ${packageName} is missing for ${process.platform}-${process.arch}. ` +
-        `Reinstall with "npm install -g claude-adapter@${version}". ` +
-        'Supported platforms: macOS arm64/x64, Linux glibc arm64/x64, and Windows x64.'
-    );
+  const target = nativeTargetForPlatform();
+  const bundledBinary = resolve(__dirname, '..', 'bin', target.directory, target.binary);
+  if (existsSync(bundledBinary)) return bundledBinary;
+
+  const developmentBinary = resolve(__dirname, '..', 'native', 'target', 'release', target.binary);
+  if (existsSync(developmentBinary)) {
+    return developmentBinary;
   }
+  throw new Error(
+    `Offline package is missing bin/${target.directory}/${target.binary}. ` +
+      `Reinstall claude-adapter@${version} from the complete npm tarball.`
+  );
 }
 
 export async function startNativeServer(configPath: string, port: number): Promise<NativeServer> {

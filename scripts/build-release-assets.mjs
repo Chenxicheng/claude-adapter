@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -17,12 +16,10 @@ import { fileURLToPath } from 'node:url';
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const releaseDir = join(rootDir, 'release');
 const stagingDir = join(releaseDir, 'pack-staging');
+const binaryDir = join(rootDir, 'bin');
 const packageJson = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'));
 const version = packageJson.version;
 const platforms = [
-  ['darwin-arm64', 'claude-adapter-native'],
-  ['darwin-x64', 'claude-adapter-native'],
-  ['linux-arm64-gnu', 'claude-adapter-native'],
   ['linux-x64-gnu', 'claude-adapter-native'],
   ['win32-x64-msvc', 'claude-adapter-native.exe'],
 ];
@@ -45,28 +42,17 @@ function resetBuildDirs() {
   mkdirSync(stagingDir, { recursive: true });
 }
 
-function currentPlatform() {
-  const suffix =
-    process.platform === 'linux' ? '-gnu' : process.platform === 'win32' ? '-msvc' : '';
-  const name = `${process.platform}-${process.arch}${suffix}`;
-  const entry = platforms.find(([platform]) => platform === name);
-  if (!entry)
-    throw new Error(`Cannot package unsupported platform ${process.platform}-${process.arch}`);
-  return entry;
-}
-
-function stageLocalBinary() {
-  run('npm', ['run', 'build:native']);
-  const [platform, binary] = currentPlatform();
-  const source = join(rootDir, 'native', 'target', 'release', binary);
-  const destination = join(rootDir, 'npm', platform, 'bin', binary);
-  mkdirSync(dirname(destination), { recursive: true });
-  cpSync(source, destination);
-  if (process.platform !== 'win32') chmodSync(destination, 0o755);
+function validateStagedBinaries() {
+  for (const [platform, binary] of platforms) {
+    if (!existsSync(join(binaryDir, platform, binary))) {
+      throw new Error(`Missing offline binary bin/${platform}/${binary}`);
+    }
+  }
 }
 
 function createMainPackage() {
   cpSync(join(rootDir, 'dist'), join(stagingDir, 'dist'), { recursive: true });
+  cpSync(binaryDir, join(stagingDir, 'bin'), { recursive: true });
   cpSync(join(rootDir, 'LICENSE'), join(stagingDir, 'LICENSE'));
   const stagedPackageJson = Object.fromEntries(
     [
@@ -81,35 +67,23 @@ function createMainPackage() {
       'bugs',
       'homepage',
       'dependencies',
-      'optionalDependencies',
+      'bundleDependencies',
       'engines',
     ].map((key) => [key, packageJson[key]])
   );
-  stagedPackageJson.files = ['dist', 'LICENSE'];
+  stagedPackageJson.files = ['dist', 'bin', 'LICENSE'];
   writeFileSync(
     join(stagingDir, 'package.json'),
     `${JSON.stringify(stagedPackageJson, null, 2)}\n`
   );
+  run('npm', ['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], {
+    cwd: stagingDir,
+  });
   run('npm', ['pack', '--pack-destination', releaseDir], { cwd: stagingDir });
-  validateTarball(join(releaseDir, `${packageJson.name}-${version}.tgz`));
+  validateTarball(join(releaseDir, `${packageJson.name}-${version}.tgz`), true);
 }
 
-function createPlatformPackages() {
-  let count = 0;
-  for (const [platform, binary] of platforms) {
-    const directory = join(rootDir, 'npm', platform);
-    if (!existsSync(join(directory, 'bin', binary))) continue;
-    run('npm', ['pack', '--pack-destination', releaseDir], { cwd: directory });
-    const platformPackage = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
-    validateTarball(join(releaseDir, `${platformPackage.name}-${version}.tgz`));
-    count++;
-  }
-  if (process.env.REQUIRE_ALL_PLATFORMS === '1' && count !== platforms.length) {
-    throw new Error(`Expected ${platforms.length} platform binaries, found ${count}`);
-  }
-}
-
-function validateTarball(tarball) {
+function validateTarball(tarball, requireBinaries = false) {
   if (!existsSync(tarball)) throw new Error(`Expected package tarball not found: ${tarball}`);
   const list = spawnSync('tar', ['-tzf', tarball], { encoding: 'utf8' });
   if (list.status !== 0) throw new Error(list.stderr);
@@ -117,6 +91,7 @@ function validateTarball(tarball) {
     .split('\n')
     .filter(Boolean)
     .filter((entry) => {
+      if (entry.startsWith('package/node_modules/')) return false;
       const name = basename(entry).toLowerCase();
       return (
         name === 'readme' ||
@@ -129,14 +104,27 @@ function validateTarball(tarball) {
     });
   if (forbidden.length)
     throw new Error(`Package contains forbidden files:\n${forbidden.join('\n')}`);
+  if (requireBinaries) {
+    for (const [platform, binary] of platforms) {
+      const expected = `package/bin/${platform}/${binary}`;
+      if (!list.stdout.split('\n').includes(expected)) {
+        throw new Error(`Package is missing ${expected}`);
+      }
+    }
+    for (const dependency of packageJson.bundleDependencies) {
+      const expected = `package/node_modules/${dependency}/package.json`;
+      if (!list.stdout.split('\n').includes(expected)) {
+        throw new Error(`Package is missing bundled dependency ${dependency}`);
+      }
+    }
+  }
 }
 
 function validateCleanInstall() {
   if (process.env.CLEAN_INSTALL !== '1') return;
-  const [platform] = currentPlatform();
-  const platformPackage = JSON.parse(
-    readFileSync(join(rootDir, 'npm', platform, 'package.json'), 'utf8')
-  );
+  if (process.platform !== 'linux' || process.arch !== 'x64') {
+    throw new Error('Clean install validation requires Linux x64');
+  }
   const directory = mkdtempSync(join(tmpdir(), 'claude-adapter-install-'));
   try {
     writeFileSync(join(directory, 'package.json'), '{"private":true}\n');
@@ -153,10 +141,12 @@ function validateCleanInstall() {
       'npm',
       [
         'install',
+        '--offline',
         '--ignore-scripts',
         '--no-audit',
         '--no-fund',
-        join(releaseDir, `${platformPackage.name}-${version}.tgz`),
+        '--cache',
+        join(directory, 'npm-cache'),
         join(releaseDir, `${packageJson.name}-${version}.tgz`),
       ],
       { cwd: directory }
@@ -201,16 +191,13 @@ function createSourceArchive() {
 }
 
 function cleanStagedBinaries() {
-  for (const [platform] of platforms) {
-    rmSync(join(rootDir, 'npm', platform, 'bin'), { recursive: true, force: true });
-  }
+  rmSync(binaryDir, { recursive: true, force: true });
 }
 
 resetBuildDirs();
 try {
-  if (process.env.RELEASE_BINARIES_STAGED !== '1') stageLocalBinary();
+  validateStagedBinaries();
   run('npm', ['run', 'build:release']);
-  createPlatformPackages();
   createMainPackage();
   validateCleanInstall();
   createSourceArchive();

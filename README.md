@@ -39,7 +39,7 @@ This adapter effectively "tricks" Claude Code into communicating with models it 
 
 ## Architecture
 
-The adapter operates as a native Rust HTTP server that mimics the Anthropic API structure while forwarding requests to an upstream OpenAI-compatible target. npm installs the matching prebuilt binary and keeps the existing interactive configuration experience; end users do not need Rust.
+The adapter operates as a native Rust HTTP server that mimics the Anthropic API structure while forwarding requests to an upstream OpenAI-compatible target. One self-contained npm tarball includes the Linux x64 and Windows x64 binaries plus all production JavaScript dependencies, so it can be transferred and installed offline without Rust or registry access.
 
 ```
 ┌─────────────┐      ┌─────────────────┐      ┌─────────────────┐
@@ -70,7 +70,13 @@ To install the adapter globally on your system, execute the following command:
 npm install -g claude-adapter
 ```
 
-Prebuilt binaries are available for macOS arm64/x64, Linux glibc arm64/x64, and Windows x64. musl Linux and Windows arm64 are not supported in 2.0.
+For an offline machine, transfer the single release tarball and install it without registry access:
+
+```bash
+npm install -g --offline ./claude-adapter-2.0.0.tgz
+```
+
+The package selects its embedded binary at runtime. Version 2.0 supports Linux glibc x64 and Windows x64; macOS, Linux arm64, musl Linux, and Windows arm64 are not included.
 
 ### Quick Start
 

@@ -74,12 +74,12 @@ By participating in this project, you agree to maintain a respectful and inclusi
 ```
 claude-adapter/
 ├── native/                 # Rust proxy, protocol conversion, streaming, JSONL
-├── npm/                    # Platform-specific native npm packages
 ├── src/
 │   ├── cli.ts              # CLI/configuration entry point
-│   └── native.ts           # Native package selection and process lifecycle
+│   └── native.ts           # Embedded binary selection and process lifecycle
 ├── tests/                  # Node CLI tests
 ├── bench/                  # Deterministic parity/performance harness
+├── scripts/                # Offline release packaging
 └── package.json
 ```
 

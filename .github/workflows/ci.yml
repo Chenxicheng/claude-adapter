@@ -41,16 +41,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
-            package: darwin-arm64
-          - runner: macos-15-intel
-            package: darwin-x64
           - runner: ubuntu-24.04
             package: linux-x64-gnu
-          - runner: ubuntu-24.04-arm
-            package: linux-arm64-gnu
+            binary: claude-adapter-native
           - runner: windows-2025
             package: win32-x64-msvc
+            binary: claude-adapter-native.exe
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -69,7 +65,33 @@ jobs:
           else
             native/target/release/claude-adapter-native --version
           fi
-      - name: Package and clean-install current platform
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.package }}
+          path: native/target/release/${{ matrix.binary }}
+          if-no-files-found: error
+
+  offline-package:
+    name: Offline npm package
+    needs: native-platforms
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Stage offline binaries
+        run: |
+          mkdir -p bin/linux-x64-gnu bin/win32-x64-msvc
+          cp artifacts/native-linux-x64-gnu/claude-adapter-native bin/linux-x64-gnu/
+          cp artifacts/native-win32-x64-msvc/claude-adapter-native.exe bin/win32-x64-msvc/
+          chmod +x bin/linux-x64-gnu/claude-adapter-native
+      - name: Package and clean-install
         env:
           CLEAN_INSTALL: '1'
         run: npm run release:assets

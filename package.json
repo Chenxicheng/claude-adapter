@@ -22,6 +22,7 @@
   },
   "files": [
     "dist",
+    "bin",
     "LICENSE"
   ],
   "keywords": [
@@ -56,13 +57,11 @@
     "commander": "^12.1.0",
     "inquirer": "^8.2.6"
   },
-  "optionalDependencies": {
-    "claude-adapter-darwin-arm64": "2.0.0",
-    "claude-adapter-darwin-x64": "2.0.0",
-    "claude-adapter-linux-arm64-gnu": "2.0.0",
-    "claude-adapter-linux-x64-gnu": "2.0.0",
-    "claude-adapter-win32-x64-msvc": "2.0.0"
-  },
+  "bundleDependencies": [
+    "chalk",
+    "commander",
+    "inquirer"
+  ],
   "devDependencies": {
     "@types/inquirer": "^9.0.7",
     "@types/jest": "^29.5.14",
