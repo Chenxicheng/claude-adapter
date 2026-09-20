@@ -10,6 +10,15 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ---
 
+## [2.0.1] — 2026-09-20
+
+### Fixed
+
+- **Protocol validation**: Strictly validates supported Anthropic request fields, nested content, tool controls, structured output, and OpenAI upstream response shapes instead of silently dropping malformed data.
+- **Streaming**: Buffers split tool-call names and arguments, preserves sequential content-block indices, and reports missing final token usage as unknown rather than zero.
+
+---
+
 ## [2.0.0] — 2026-09-19
 
 ### Added

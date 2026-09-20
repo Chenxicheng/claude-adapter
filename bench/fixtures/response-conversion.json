@@ -6,7 +6,7 @@
       "id": "chatcmpl_1",
       "choices": [
         {
-          "message": { "content": "answer" },
+          "message": { "role": "assistant", "content": "answer" },
           "finish_reason": "stop"
         }
       ],
@@ -43,11 +43,13 @@
       "choices": [
         {
           "message": {
+            "role": "assistant",
             "reasoning_content": "think",
             "content": null,
             "tool_calls": [
               {
                 "id": "toolu_1",
+                "type": "function",
                 "function": { "name": "lookup", "arguments": "{\"id\":1}" }
               }
             ]

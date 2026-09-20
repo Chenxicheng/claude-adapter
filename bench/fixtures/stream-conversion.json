@@ -27,6 +27,45 @@
       }
     }
   ],
+  "toolChunks": [
+    {
+      "choices": [
+        {
+          "delta": {
+            "tool_calls": [
+              {
+                "index": 0,
+                "id": "toolu_1",
+                "type": "function",
+                "function": { "name": "look", "arguments": "{\"id\":" }
+              }
+            ]
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "choices": [
+        {
+          "delta": {
+            "tool_calls": [
+              { "index": 0, "function": { "name": "up", "arguments": "1}" } }
+            ]
+          },
+          "finish_reason": "tool_calls"
+        }
+      ]
+    }
+  ],
+  "toolEventTypes": [
+    "message_start",
+    "content_block_start",
+    "content_block_delta",
+    "content_block_stop",
+    "message_delta",
+    "message_stop"
+  ],
   "eventTypes": [
     "message_start",
     "content_block_start",
@@ -36,6 +75,17 @@
     "message_stop"
   ],
   "deltaTypes": ["text_delta"],
+  "initialUsage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_creation_input_tokens": null,
+    "cache_read_input_tokens": null,
+    "output_tokens_details": null,
+    "server_tool_use": null,
+    "cache_creation": null,
+    "inference_geo": null,
+    "service_tier": null
+  },
   "finalUsage": {
     "input_tokens": 3,
     "output_tokens": 4,

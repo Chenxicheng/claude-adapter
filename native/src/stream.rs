@@ -8,10 +8,7 @@ use futures_util::StreamExt;
 use rand::Rng;
 use serde_json::{Value, json};
 
-use crate::{
-    converter::{map_finish_reason, thinking_tokens},
-    storage::Storage,
-};
+use crate::{converter::map_finish_reason, storage::Storage};
 
 pub fn transform_stream(
     response: reqwest::Response,
@@ -148,7 +145,6 @@ struct ToolCall {
     id: String,
     name: String,
     arguments: String,
-    block_index: usize,
 }
 
 struct StreamState {
@@ -165,11 +161,11 @@ struct StreamState {
     reasoning_seen: bool,
     visible_content_seen: bool,
     refusal_text: String,
+    deferred_text: String,
     finish_reason: Option<String>,
-    input_tokens: u64,
-    output_tokens: u64,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
     thinking_tokens: Option<u64>,
-    usage_received: bool,
     upstream_usage: Option<Value>,
 }
 
@@ -189,31 +185,57 @@ impl StreamState {
             reasoning_seen: false,
             visible_content_seen: false,
             refusal_text: String::new(),
+            deferred_text: String::new(),
             finish_reason: None,
-            input_tokens: 0,
-            output_tokens: 0,
+            input_tokens: None,
+            output_tokens: None,
             thinking_tokens: None,
-            usage_received: false,
             upstream_usage: None,
         }
     }
 
     fn process_chunk(&mut self, chunk: &Value) -> Result<Vec<Value>, String> {
         let mut events = Vec::new();
-        if chunk.get("usage").is_some_and(is_non_empty_object) {
-            self.upstream_usage = chunk.get("usage").cloned();
-        }
-        if let Some(usage) = chunk.get("usage") {
-            let input = usage.get("prompt_tokens").and_then(Value::as_u64);
-            let output = usage.get("completion_tokens").and_then(Value::as_u64);
-            if let Some(input) = input {
-                self.input_tokens = input;
-                self.usage_received = true;
+        if let Some(usage) = chunk.get("usage")
+            && !usage.is_null()
+        {
+            let usage = usage
+                .as_object()
+                .ok_or_else(|| "Upstream stream usage must be an object or null".to_owned())?;
+            for (field, target) in [
+                ("prompt_tokens", &mut self.input_tokens),
+                ("completion_tokens", &mut self.output_tokens),
+            ] {
+                if let Some(value) = usage.get(field)
+                    && !value.is_null()
+                {
+                    *target = Some(value.as_u64().ok_or_else(|| {
+                        format!("Upstream stream usage.{field} must be an integer")
+                    })?);
+                }
             }
-            if let Some(output) = output {
-                self.output_tokens = output;
+            if let Some(details) = usage.get("completion_tokens_details")
+                && !details.is_null()
+                && !details.is_object()
+            {
+                return Err(
+                    "Upstream stream usage.completion_tokens_details must be an object or null"
+                        .to_owned(),
+                );
             }
-            self.thinking_tokens = thinking_tokens(Some(usage));
+            if let Some(tokens) = usage
+                .get("completion_tokens_details")
+                .and_then(|details| details.get("reasoning_tokens"))
+                && !tokens.is_null()
+            {
+                self.thinking_tokens = Some(tokens.as_u64().ok_or_else(|| {
+                    "Upstream stream usage.completion_tokens_details.reasoning_tokens must be an integer"
+                        .to_owned()
+                })?);
+            }
+            if !usage.is_empty() {
+                self.upstream_usage = Some(Value::Object(usage.clone()));
+            }
         }
         if self.response_model.is_none() {
             self.response_model = chunk
@@ -222,13 +244,20 @@ impl StreamState {
                 .map(str::to_owned);
         }
 
-        let Some(choice) = chunk
+        let choices = chunk
             .get("choices")
             .and_then(Value::as_array)
-            .and_then(|choices| choices.first())
-        else {
-            return Ok(events);
-        };
+            .ok_or_else(|| "Upstream stream chunk is missing choices".to_owned())?;
+        if choices.is_empty() {
+            if chunk.get("usage").is_some_and(is_non_empty_object) {
+                return Ok(events);
+            }
+            return Err("Upstream stream chunk has no choice or usage".to_owned());
+        }
+        if choices.len() != 1 {
+            return Err("Upstream stream chunk must contain exactly one choice".to_owned());
+        }
+        let choice = &choices[0];
         if !self.started {
             events.push(json!({
                 "type": "message_start",
@@ -257,7 +286,26 @@ impl StreamState {
             }));
             self.started = true;
         }
-        let delta = choice.get("delta").unwrap_or(&Value::Null);
+        let delta = choice
+            .get("delta")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "Upstream stream choice is missing delta".to_owned())?;
+        if delta
+            .get("role")
+            .is_some_and(|role| !role.is_null() && role.as_str() != Some("assistant"))
+        {
+            return Err("Upstream stream delta.role must be assistant or null".to_owned());
+        }
+        for field in ["content", "refusal", "reasoning_content", "reasoning"] {
+            if delta
+                .get(field)
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(format!(
+                    "Upstream stream delta.{field} must be a string or null"
+                ));
+            }
+        }
         let reasoning = delta
             .get("reasoning_content")
             .or_else(|| delta.get("reasoning"))
@@ -281,9 +329,15 @@ impl StreamState {
             self.refusal_text.push_str(refusal);
             self.push_text(refusal, &mut events);
         }
+        if delta
+            .get("tool_calls")
+            .is_some_and(|calls| !calls.is_null() && !calls.is_array())
+        {
+            return Err("Upstream stream delta.tool_calls must be an array".to_owned());
+        }
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tool_call in tool_calls {
-                self.process_tool_delta(tool_call, &mut events);
+                self.process_tool_delta(tool_call, &mut events)?;
             }
         }
         if choice
@@ -291,17 +345,47 @@ impl StreamState {
             .is_some_and(|reason| !reason.is_null())
         {
             self.close_text(&mut events);
-            self.close_tools(&mut events);
-            self.finish_reason = choice
-                .get("finish_reason")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            self.finish_reason = Some(
+                choice
+                    .get("finish_reason")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        "Upstream stream finish_reason must be a string or null".to_owned()
+                    })?
+                    .to_owned(),
+            );
         }
         Ok(events)
     }
 
-    fn process_tool_delta(&mut self, delta: &Value, events: &mut Vec<Value>) {
-        let index = delta.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+    fn process_tool_delta(&mut self, delta: &Value, events: &mut Vec<Value>) -> Result<(), String> {
+        let delta = delta
+            .as_object()
+            .ok_or_else(|| "Upstream tool delta must be an object".to_owned())?;
+        let index = delta
+            .get("index")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "Upstream tool delta is missing index".to_owned())?
+            as usize;
+        if delta
+            .get("type")
+            .is_some_and(|kind| !kind.is_null() && kind.as_str() != Some("function"))
+        {
+            return Err("Upstream tool delta type must be function or null".to_owned());
+        }
+        if delta
+            .get("id")
+            .is_some_and(|id| !id.is_null() && !id.is_string())
+        {
+            return Err("Upstream tool delta id must be a string or null".to_owned());
+        }
+        if delta
+            .get("function")
+            .is_some_and(|function| !function.is_null() && !function.is_object())
+        {
+            return Err("Upstream tool delta function must be an object or null".to_owned());
+        }
+        let function = delta.get("function").and_then(Value::as_object);
         if !self.tools.contains_key(&index) {
             self.close_text(events);
             let id = delta
@@ -310,50 +394,50 @@ impl StreamState {
                 .filter(|id| !self.tools.values().any(|call| call.id == *id))
                 .map(str::to_owned)
                 .unwrap_or_else(generated_tool_id);
-            let name = delta
-                .pointer("/function/name")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let block_index = self.content_index + index;
             self.tools.insert(
                 index,
                 ToolCall {
                     id: id.clone(),
-                    name: name.to_owned(),
+                    name: String::new(),
                     arguments: String::new(),
-                    block_index,
                 },
             );
-            events.push(json!({
-                "type": "content_block_start",
-                "index": block_index,
-                "content_block": {"type": "tool_use", "id": id, "name": name, "input": {}}
-            }));
         }
-        if let Some(arguments) = delta.pointer("/function/arguments").and_then(Value::as_str)
-            && !arguments.is_empty()
+        if let Some(arguments) = function.and_then(|function| function.get("arguments"))
+            && !arguments.is_null()
+            && !arguments.is_string()
+        {
+            return Err("Upstream tool delta function.arguments must be a string".to_owned());
+        }
+        if let Some(name) = function
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)
+            && !name.is_empty()
         {
             self.tools
                 .get_mut(&index)
                 .expect("inserted tool")
-                .arguments
-                .push_str(arguments);
-            let block_index = self.tools[&index].block_index;
-            events.push(json!({
-                "type": "content_block_delta",
-                "index": block_index,
-                "delta": {"type": "input_json_delta", "partial_json": arguments}
-            }));
+                .name
+                .push_str(name);
         }
-        if let Some(name) = delta.pointer("/function/name").and_then(Value::as_str)
-            && !name.is_empty()
+        if let Some(arguments) = function
+            .and_then(|function| function.get("arguments"))
+            .and_then(Value::as_str)
+            && !arguments.is_empty()
         {
-            self.tools.get_mut(&index).expect("inserted tool").name = name.to_owned();
+            let tool = self.tools.get_mut(&index).expect("inserted tool");
+            tool.arguments.push_str(arguments);
         }
         self.visible_content_seen = true;
+        Ok(())
     }
 
     fn push_text(&mut self, text: &str, events: &mut Vec<Value>) {
+        if !self.tools.is_empty() && !self.tools_closed {
+            self.deferred_text.push_str(text);
+            self.visible_content_seen = true;
+            return;
+        }
         if !self.text_open {
             events.push(json!({
                 "type": "content_block_start",
@@ -378,13 +462,25 @@ impl StreamState {
         }
     }
 
-    fn close_tools(&mut self, events: &mut Vec<Value>) {
+    fn emit_tools(&mut self, events: &mut Vec<Value>) {
         if !self.tools_closed {
-            events.extend(
-                self.tools
-                    .values()
-                    .map(|tool| json!({"type": "content_block_stop", "index": tool.block_index})),
-            );
+            for tool in self.tools.values() {
+                let index = self.content_index;
+                self.content_index += 1;
+                events.push(json!({
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": {"type": "tool_use", "id": tool.id, "name": tool.name, "input": {}}
+                }));
+                if !tool.arguments.is_empty() {
+                    events.push(json!({
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {"type": "input_json_delta", "partial_json": tool.arguments}
+                    }));
+                }
+                events.push(json!({"type": "content_block_stop", "index": index}));
+            }
             self.tools_closed = true;
         }
     }
@@ -396,6 +492,9 @@ impl StreamState {
             .as_deref()
             .ok_or_else(|| "Upstream stream ended without a finish_reason".to_owned())?;
         let mapped_finish = map_finish_reason(finish_reason).map_err(|error| error.message)?;
+        if (finish_reason == "tool_calls") != !self.tools.is_empty() {
+            return Err("Upstream tool calls do not match finish_reason".to_owned());
+        }
         for tool in self.tools.values() {
             if tool.name.is_empty() {
                 return Err("Upstream tool call is missing function.name".to_owned());
@@ -421,7 +520,12 @@ impl StreamState {
             );
         }
         self.close_text(&mut events);
-        self.close_tools(&mut events);
+        self.emit_tools(&mut events);
+        if !self.deferred_text.is_empty() {
+            let text = std::mem::take(&mut self.deferred_text);
+            self.push_text(&text, &mut events);
+            self.close_text(&mut events);
+        }
         let is_refusal = filtered || !self.refusal_text.is_empty();
         let stop_reason = if is_refusal { "refusal" } else { mapped_finish };
         let stop_details = if is_refusal {
@@ -430,8 +534,8 @@ impl StreamState {
             Value::Null
         };
         let usage = json!({
-            "input_tokens": if self.usage_received { Value::from(self.input_tokens) } else { Value::Null },
-            "output_tokens": self.output_tokens,
+            "input_tokens": self.input_tokens.map(Value::from),
+            "output_tokens": self.output_tokens.map(Value::from),
             "cache_creation_input_tokens": Value::Null,
             "cache_read_input_tokens": Value::Null,
             "output_tokens_details": self.thinking_tokens.map(|tokens| json!({"thinking_tokens": tokens})),
@@ -530,11 +634,7 @@ mod tests {
             event_types.as_slice(),
             fixture["eventTypes"].as_array().unwrap().as_slice()
         );
-        assert_eq!(events[0]["message"]["usage"]["input_tokens"], 0);
-        assert_eq!(
-            events[0]["message"]["usage"]["cache_creation_input_tokens"],
-            Value::Null
-        );
+        assert_eq!(events[0]["message"]["usage"], fixture["initialUsage"]);
         let delta_types = events
             .iter()
             .filter_map(|event| event.pointer("/delta/type").cloned())
@@ -549,6 +649,25 @@ mod tests {
             .map(|event| &event["usage"])
             .unwrap();
         assert_eq!(final_usage, &fixture["finalUsage"]);
+
+        let mut tools = StreamState::new("model".into(), "provider".into(), "request".into());
+        let mut tool_events = fixture["toolChunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|chunk| tools.process_chunk(chunk).unwrap())
+            .collect::<Vec<_>>();
+        tool_events.extend(tools.finish().unwrap());
+        let tool_event_types = tool_events
+            .iter()
+            .map(|event| event["type"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tool_event_types.as_slice(),
+            fixture["toolEventTypes"].as_array().unwrap().as_slice()
+        );
+        assert_eq!(tool_events[1]["content_block"]["name"], "lookup");
+        assert_eq!(tool_events[2]["delta"]["partial_json"], "{\"id\":1}");
     }
 
     #[test]
@@ -562,8 +681,7 @@ mod tests {
             ]}, "finish_reason": null}]
         })).unwrap();
         assert_eq!(events[0]["type"], "message_start");
-        assert_eq!(events[1]["content_block"]["id"], "toolu_1");
-        assert_eq!(events[3]["content_block"]["id"], "toolu_2");
+        assert_eq!(events.len(), 1);
 
         let finished = state
             .process_chunk(&json!({
@@ -574,11 +692,20 @@ mod tests {
                 "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
             }))
             .unwrap();
-        assert_eq!(finished[2]["type"], "content_block_stop");
-        assert_eq!(finished[3]["type"], "content_block_stop");
+        assert!(finished.is_empty());
         let final_events = state.finish().unwrap();
-        assert_eq!(final_events[0]["delta"]["stop_reason"], "tool_use");
-        assert_eq!(final_events[0]["usage"]["input_tokens"], 10);
+        assert_eq!(final_events[0]["content_block"]["id"], "toolu_1");
+        assert_eq!(
+            final_events[2],
+            json!({"type": "content_block_stop", "index": 0})
+        );
+        assert_eq!(final_events[3]["content_block"]["id"], "toolu_2");
+        assert_eq!(
+            final_events[5],
+            json!({"type": "content_block_stop", "index": 1})
+        );
+        assert_eq!(final_events[6]["delta"]["stop_reason"], "tool_use");
+        assert_eq!(final_events[6]["usage"]["input_tokens"], 10);
         assert_eq!(state.usage_record()["usage"]["total_tokens"], 14);
     }
 
@@ -674,6 +801,14 @@ mod tests {
             }))
             .unwrap();
         assert!(missing_name.finish().is_err());
+
+        let mut mismatched = StreamState::new("model".into(), "provider".into(), "request".into());
+        mismatched
+            .process_chunk(&json!({
+                "choices": [{"delta": {"content": "ok"}, "finish_reason": "tool_calls"}]
+            }))
+            .unwrap();
+        assert!(mismatched.finish().is_err());
     }
 
     #[test]
@@ -684,10 +819,13 @@ mod tests {
                 &json!({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}),
             )
             .unwrap();
-        assert_eq!(
-            missing.finish().unwrap()[0]["usage"]["input_tokens"],
-            Value::Null
-        );
+        let missing_final = missing.finish().unwrap();
+        let missing_usage = &missing_final
+            .iter()
+            .find(|event| event["type"] == "message_delta")
+            .unwrap()["usage"];
+        assert_eq!(missing_usage["input_tokens"], Value::Null);
+        assert_eq!(missing_usage["output_tokens"], Value::Null);
         assert_eq!(missing.usage_record()["usageStatus"], "missing_final_chunk");
 
         let mut partial = StreamState::new("model".into(), "provider".into(), "request".into());
@@ -712,5 +850,72 @@ mod tests {
         )
         .unwrap();
         assert_eq!(zero.finish().unwrap()[0]["usage"]["input_tokens"], 0);
+    }
+
+    #[test]
+    fn buffers_tool_arguments_until_the_name_arrives() {
+        let mut state = StreamState::new("model".into(), "provider".into(), "request".into());
+        let initial = state
+            .process_chunk(&json!({
+                "choices": [{"delta": {"tool_calls": [{
+                    "index": 0, "id": "toolu_1", "function": {"name": "look", "arguments": "{\"value\":"}
+                }]}, "finish_reason": null}]
+            }))
+            .unwrap();
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0]["type"], "message_start");
+
+        let named = state
+            .process_chunk(&json!({
+                "choices": [{"delta": {"tool_calls": [{
+                    "index": 0, "function": {"name": "up", "arguments": "1}"}
+                }]}, "finish_reason": "tool_calls"}]
+            }))
+            .unwrap();
+        assert!(named.is_empty());
+        let finished = state.finish().unwrap();
+        assert_eq!(finished[0]["content_block"]["name"], "lookup");
+        assert_eq!(finished[1]["delta"]["partial_json"], "{\"value\":1}");
+    }
+
+    #[test]
+    fn rejects_tool_content_with_a_non_tool_finish_reason() {
+        let mut state = StreamState::new("model".into(), "provider".into(), "request".into());
+        state
+            .process_chunk(&json!({
+                "choices": [{"delta": {"tool_calls": [{
+                    "index": 0, "id": "toolu_1",
+                    "function": {"name": "lookup", "arguments": "{}"}
+                }]}, "finish_reason": null}]
+            }))
+            .unwrap();
+        let during = state
+            .process_chunk(&json!({
+                "choices": [{"delta": {"content": "after tool"}, "finish_reason": "stop"}]
+            }))
+            .unwrap();
+        assert!(during.is_empty());
+
+        assert!(state.finish().is_err());
+    }
+
+    #[test]
+    fn rejects_empty_choice_chunks_without_usage_and_malformed_usage() {
+        for chunk in [
+            json!({"choices": []}),
+            json!({"choices": [], "usage": {}}),
+            json!({"choices": [], "usage": "bad"}),
+            json!({"choices": [], "usage": {"prompt_tokens": "1"}}),
+            json!({"choices": [{"delta": {"role": "user"}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": 1}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "type": "custom"}]}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": 1}]}, "finish_reason": null}]}),
+        ] {
+            let mut state = StreamState::new("model".into(), "provider".into(), "request".into());
+            assert!(
+                state.process_chunk(&chunk).is_err(),
+                "chunk should fail: {chunk}"
+            );
+        }
     }
 }

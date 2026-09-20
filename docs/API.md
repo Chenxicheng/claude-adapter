@@ -11,7 +11,7 @@ Accepts an Anthropic Messages request and forwards it to the configured OpenAI-c
   model: string;
   max_tokens: number;
   messages: Array<{
-    role: 'user' | 'assistant';
+    role: 'user' | 'assistant' | 'system';
     content: string | ContentBlock[];
   }>;
   system?: string | ContentBlock[];
@@ -27,15 +27,23 @@ Accepts an Anthropic Messages request and forwards it to the configured OpenAI-c
   };
   output_config?: {
     effort?: 'low' | 'medium' | 'high' | 'max';
+    format?: {
+      type: 'json_schema';
+      schema: Record<string, unknown>;
+    };
   };
+  cache_control?: { type: 'ephemeral'; ttl?: '5m' | '1h' } | null;
+  metadata?: { user_id?: string | null };
 }
 ```
 
 Every response includes `x-request-id`.
 
-Only `user` and `assistant` message roles are accepted. Assistant prefills are forwarded unchanged. Unsupported content blocks, Anthropic server tools, server-tool state, `allowed_callers`, `defer_loading`, and cache-only requests (`max_tokens: 0`) return `400` instead of being dropped or approximated.
+`user`, `assistant`, and text-only mid-conversation `system` roles are accepted. A `system` message must follow a `user` turn (consecutive system messages form one group) and must be the final message or be followed by an `assistant` turn, matching Anthropic's [placement rules](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages#limitations). It maps to an OpenAI Chat Completions [`system` message](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create). Assistant prefills are forwarded unchanged. `max_tokens` maps exactly to `max_completion_tokens`, including a value of `1`; the adapter does not apply provider-specific minimums. Unsupported or unknown fields, content blocks, per-message `clear_at` or `output_config`, Anthropic server tools, server-tool state, `allowed_callers`, `defer_loading`, and cache-only requests (`max_tokens: 0`) return `400` instead of being dropped or approximated.
 
 Client tools may omit `type` or use `type: "custom"`; `name` must be non-empty and `input_schema` must be an object. Tool `strict` maps to the OpenAI function definition. Tool choices map as `none → none`, `auto → auto`, `any → required`, and named `tool → function`; `disable_parallel_tool_use: true` maps to `parallel_tool_calls: false`. `cache_control` is accepted but not converted—the configured OpenAI-compatible upstream remains responsible for any provider-specific caching.
+
+`output_config.effort` maps to `reasoning_effort`; Anthropic `max` becomes OpenAI `xhigh`, while `low`, `medium`, and `high` remain unchanged. Generic `thinking.enabled` and `thinking.adaptive` requests return `400` because Chat Completions has no exact budget-preserving equivalent. `thinking.disabled` maps to `reasoning_effort: "none"`. Existing GLM/Qwen model-family handling remains provider-specific. `output_config.format` maps to strict OpenAI `response_format.type: "json_schema"` and cannot be combined with an assistant prefill. `metadata.user_id` maps to `safety_identifier`.
 
 Historical assistant `thinking` and `redacted_thinking` blocks are removed only when the same turn still contains text or a tool call. A turn that would become empty returns `400`.
 
@@ -84,8 +92,8 @@ For image-bearing `tool_result` blocks, text-only `role=tool` messages are emitt
   stop_sequence: string | null;
   container: null;
   usage: {
-    input_tokens: number;
-    output_tokens: number;
+    input_tokens: number | null;
+    output_tokens: number | null;
     cache_creation_input_tokens: null;
     cache_read_input_tokens: null;
     output_tokens_details: { thinking_tokens: number } | null;
@@ -110,7 +118,7 @@ Streaming uses SSE and preserves Anthropic event order:
 - `message_delta`
 - `message_stop`
 
-The final upstream usage chunk supplies the final usage values. If it is absent, final `input_tokens` is `null` rather than a fabricated zero. Private third-party `reasoning` or `reasoning_content` is not exposed as text or Anthropic thinking and is never logged; only `completion_tokens_details.reasoning_tokens` is mapped to `output_tokens_details.thinking_tokens`. A reasoning-only result is an upstream protocol error. Malformed streamed tool arguments emit an Anthropic `error` event and do not emit successful `message_delta` or `message_stop` events.
+`message_start.message.usage` uses the Anthropic-compatible numeric placeholder `0` because final usage is not known yet. The final upstream usage chunk supplies the final values. If it is absent, final token counts remain `null` rather than fabricated zeroes; a real upstream zero remains `0`. Private third-party `reasoning` or `reasoning_content` is not exposed as text or Anthropic thinking and is never logged; only `completion_tokens_details.reasoning_tokens` is mapped to `output_tokens_details.thinking_tokens`. A reasoning-only result is an upstream protocol error. Malformed streamed tool arguments emit an Anthropic `error` event and do not emit successful `message_delta` or `message_stop` events.
 
 ## `GET /health`
 

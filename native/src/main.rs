@@ -296,7 +296,7 @@ fn build_client(config: &AdapterConfig) -> Result<reqwest::Client, String> {
     }
     reqwest::Client::builder()
         .default_headers(headers)
-        .user_agent("claude-adapter/2.0.0")
+        .user_agent("claude-adapter/2.0.1")
         .pool_idle_timeout(Duration::from_secs(90))
         .build()
         .map_err(|error| format!("Failed to create upstream client: {error}"))
@@ -366,7 +366,7 @@ impl Arguments {
                         .map_err(|_| format!("Invalid port: {value}"))?;
                 }
                 "--version" | "-V" => {
-                    println!("claude-adapter-native 2.0.0");
+                    println!("claude-adapter-native 2.0.1");
                     std::process::exit(0);
                 }
                 other => return Err(format!("Unknown argument: {other}")),

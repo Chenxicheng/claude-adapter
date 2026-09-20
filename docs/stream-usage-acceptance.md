@@ -2,7 +2,7 @@
 
 ## Background
 
-OpenAI-compatible streaming responses return complete usage data in a final usage chunk when `stream_options.include_usage` is enabled. Claude-style SSE sends `message_start` before content begins, so `message_start.message.usage.input_tokens` can be `0` before the final OpenAI usage chunk arrives.
+OpenAI-compatible streaming responses return complete usage data in a final usage chunk when `stream_options.include_usage` is enabled. Claude-style SSE sends `message_start` before content begins, so this adapter uses the Anthropic-compatible numeric placeholder `0` until the final OpenAI usage chunk arrives.
 
 This acceptance check verifies that the final `message_delta.usage` carries the completed token counts without delaying the stream start or changing unrelated request, response, or tool-call behavior. `message_start.message.usage` is a Claude API compatibility placeholder in this adapter and must not be treated as recorded usage or cost data.
 
@@ -39,7 +39,7 @@ records for cache-hit and cost analysis.
 - If no upstream usage chunk arrives, final `message_delta.usage.input_tokens` is `null`, not a synthetic zero.
 - If the final upstream usage chunk reports `prompt_tokens: 0`, final `message_delta.usage` must preserve the real `input_tokens: 0`.
 - `message_start` remains the first event and is not delayed waiting for final usage.
-- `message_start.message.usage` remains a transport compatibility placeholder and is not recorded.
+- `message_start.message.usage` remains a zero-valued transport compatibility placeholder and is not recorded.
 - Streaming usage is recorded once at stream end with `usageStatus: "complete"` or `usageStatus: "missing_final_chunk"`.
 - SSE event order remains unchanged.
 - Text streaming and tool calls retain Anthropic event order. Streaming and non-streaming responses use the same finish-reason mapping.

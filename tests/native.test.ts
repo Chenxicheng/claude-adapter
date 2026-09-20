@@ -82,13 +82,13 @@ describe('native platform selection', () => {
     Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
     existsSyncMock.mockReturnValue(false);
     expect(() => resolveNativeBinary()).toThrow(
-      /Offline package is missing bin\/win32-x64-msvc\/claude-adapter-native\.exe.*Reinstall claude-adapter@2\.0\.0/
+      /Offline package is missing bin\/win32-x64-msvc\/claude-adapter-native\.exe.*Reinstall claude-adapter@2\.0\.1/
     );
   });
 
   it('publishes one offline package without platform dependencies', () => {
     const manifest = JSON.parse(readFileSync(resolve('package.json'), 'utf8'));
-    expect(manifest.version).toBe('2.0.0');
+    expect(manifest.version).toBe('2.0.1');
     expect(manifest.files).toEqual(['dist', 'bin', 'LICENSE']);
     expect(manifest.optionalDependencies).toBeUndefined();
     expect(manifest.bundleDependencies).toEqual(['chalk', 'commander', 'inquirer']);

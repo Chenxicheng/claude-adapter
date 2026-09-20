@@ -9,7 +9,7 @@
     "expected": {
       "model": "gpt-4",
       "messages": [{ "role": "user", "content": "Hello" }],
-      "max_tokens": 100
+      "max_completion_tokens": 100
     }
   },
   {
@@ -27,9 +27,31 @@
         { "role": "system", "content": "Keep this" },
         { "role": "user", "content": "Hello" }
       ],
-      "max_tokens": 64,
+      "max_completion_tokens": 64,
       "stream": true,
       "stream_options": { "include_usage": true }
+    }
+  },
+  {
+    "name": "mid-conversation system message",
+    "input": {
+      "model": "gpt-5.2",
+      "max_tokens": 100,
+      "messages": [
+        { "role": "user", "content": "Inspect the repository." },
+        {
+          "role": "system",
+          "content": [{ "type": "text", "text": "Keep the next response concise." }]
+        }
+      ]
+    },
+    "expected": {
+      "model": "gpt-5.2",
+      "messages": [
+        { "role": "user", "content": "Inspect the repository." },
+        { "role": "system", "content": "Keep the next response concise." }
+      ],
+      "max_completion_tokens": 100
     }
   },
   {
@@ -71,22 +93,22 @@
         },
         { "role": "tool", "tool_call_id": "toolu_123", "content": "Sunny" }
       ],
-      "max_tokens": 100
+      "max_completion_tokens": 100
     }
   },
   {
-    "name": "gpt5 reasoning",
+    "name": "explicit reasoning effort",
     "input": {
       "model": "gpt-5.2",
       "max_tokens": 100,
-      "thinking": { "type": "enabled", "budget_tokens": 8000 },
+      "output_config": { "effort": "max" },
       "messages": [{ "role": "user", "content": "Think" }]
     },
     "expected": {
       "model": "gpt-5.2",
       "messages": [{ "role": "user", "content": "Think" }],
       "max_completion_tokens": 100,
-      "reasoning_effort": "medium"
+      "reasoning_effort": "xhigh"
     }
   },
   {
@@ -100,7 +122,7 @@
     "expected": {
       "model": "gpt-4",
       "messages": [{ "role": "user", "content": "Hello" }],
-      "max_tokens": 100
+      "max_completion_tokens": 100
     }
   },
   {
@@ -114,7 +136,7 @@
     "expected": {
       "model": "gpt-4",
       "messages": [{ "role": "user", "content": "Hello" }],
-      "max_tokens": 10,
+      "max_completion_tokens": 10,
       "tool_choice": "none"
     }
   },
@@ -129,7 +151,7 @@
     "expected": {
       "model": "gpt-4",
       "messages": [{ "role": "user", "content": "Hello" }],
-      "max_tokens": 10,
+      "max_completion_tokens": 10,
       "tool_choice": "auto"
     }
   },
@@ -144,7 +166,7 @@
     "expected": {
       "model": "gpt-4",
       "messages": [{ "role": "user", "content": "Hello" }],
-      "max_tokens": 10,
+      "max_completion_tokens": 10,
       "tool_choice": "required",
       "parallel_tool_calls": false
     }
@@ -170,7 +192,7 @@
     "expected": {
       "model": "gpt-4",
       "messages": [{ "role": "assistant", "content": "{" }],
-      "max_tokens": 10,
+      "max_completion_tokens": 10,
       "tools": [
         {
           "type": "function",

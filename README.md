@@ -73,7 +73,7 @@ npm install -g claude-adapter
 For an offline machine, transfer the single release tarball and install it without registry access:
 
 ```bash
-npm install -g --offline ./claude-adapter-2.0.0.tgz
+npm install -g --offline ./claude-adapter-2.0.1.tgz
 ```
 
 The package selects its embedded binary at runtime. Version 2.0 supports Linux glibc x64 and Windows x64; macOS, Linux arm64, musl Linux, and Windows arm64 are not included.
@@ -136,12 +136,12 @@ Version 2 is a CLI-only product. The previous JavaScript `createServer` and conv
 | Feature Capability    | Support Status | Implementation Notes                                     |
 | --------------------- | :------------: | -------------------------------------------------------- |
 | Text Generation       |       ✅       | Full fidelity                                            |
-| System Prompts        |       ✅       | Mapped to 'system' role                                  |
+| System Prompts        |       ✅       | Top-level and valid mid-conversation system messages     |
 | Real-time Streaming   |       ✅       | SSE event translation                                    |
 | Tool/Function Calling |       ✅       | Bidirectional mapping                                    |
 | Native Tool Support   |       ✅       | Upstream model must support native tool/function calling |
 | Context Preservation  |       ✅       | Multi-turn history support                               |
-| Token Limits          |       ✅       | Parameter pass-through                                   |
+| Token Limits          |       ✅       | `max_tokens` maps exactly to `max_completion_tokens`     |
 | Sampling (Temp/Top P) |       ✅       | Parameter pass-through                                   |
 | Stop Sequences        |       ✅       | Mapped to API equivalent                                 |
 | Multimodal (Vision)   |       ✅       | Base64/URL input; upstream model must support vision     |

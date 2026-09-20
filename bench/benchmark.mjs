@@ -160,7 +160,7 @@ async function verifyProtocolScenarios(url, mock) {
       max_tokens: 128,
       messages: [{ role: 'user', content: '__reasoning_tool__' }],
       tools: [{ name: 'lookup', description: 'Lookup', input_schema: { type: 'object' } }],
-      thinking: { type: 'enabled', budget_tokens: 4000 },
+      output_config: { effort: 'high' },
     }),
   });
   const toolBody = await toolResponse.json();
@@ -342,7 +342,11 @@ async function startMockUpstream() {
                 reasoning_content: 'think',
                 content: null,
                 tool_calls: [
-                  { id: 'toolu_1', function: { name: 'lookup', arguments: '{"id":1}' } },
+                  {
+                    id: 'toolu_1',
+                    type: 'function',
+                    function: { name: 'lookup', arguments: '{"id":1}' },
+                  },
                 ],
               },
               finish_reason: 'tool_calls',

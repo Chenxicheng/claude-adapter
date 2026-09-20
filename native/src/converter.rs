@@ -10,12 +10,30 @@ use crate::error::AppError;
 
 const BILLING_HEADER: &str = "x-anthropic-billing-header:";
 const IMAGE_MEDIA_TYPES: &[&str] = &["image/jpeg", "image/png", "image/webp", "image/gif"];
+const REQUEST_FIELDS: &[&str] = &[
+    "model",
+    "max_tokens",
+    "messages",
+    "system",
+    "temperature",
+    "top_p",
+    "stream",
+    "stop_sequences",
+    "tools",
+    "tool_choice",
+    "thinking",
+    "output_config",
+    "cache_control",
+    "metadata",
+];
 
 pub fn validate_request(body: &Value) -> Result<(), AppError> {
     let object = body
         .as_object()
         .ok_or_else(|| AppError::bad_request("body: Request body must be an object"))?;
     let mut errors = Vec::new();
+
+    reject_unknown_fields(object, REQUEST_FIELDS, "", &mut errors);
 
     if object
         .get("model")
@@ -24,15 +42,12 @@ pub fn validate_request(body: &Value) -> Result<(), AppError> {
     {
         errors.push("model: model is required and must be a string".to_owned());
     }
-    match object.get("max_tokens").and_then(Value::as_i64) {
+    match object.get("max_tokens").and_then(Value::as_u64) {
         None => errors.push("max_tokens: max_tokens is required and must be a number".to_owned()),
         Some(0) => errors.push(
             "max_tokens: cache-only requests are unsupported; max_tokens must be positive"
                 .to_owned(),
         ),
-        Some(value) if value < 0 => {
-            errors.push("max_tokens: max_tokens must be a positive number".to_owned())
-        }
         _ => {}
     }
     match object.get("messages") {
@@ -52,6 +67,18 @@ pub fn validate_request(body: &Value) -> Result<(), AppError> {
     {
         errors.push("stream: stream must be a boolean".to_owned());
     }
+    validate_system(object.get("system"), &mut errors);
+    validate_stop_sequences(object.get("stop_sequences"), &mut errors);
+    validate_cache_control(object.get("cache_control"), "cache_control", &mut errors);
+    validate_metadata(object.get("metadata"), &mut errors);
+    validate_output_config(object.get("output_config"), object, &mut errors);
+    validate_thinking(
+        object.get("thinking"),
+        object.get("model").and_then(Value::as_str),
+        &mut errors,
+    );
+    validate_tools_request(object.get("tools"), &mut errors);
+    validate_tool_choice_request(object.get("tool_choice"), &mut errors);
 
     if errors.is_empty() {
         Ok(())
@@ -68,18 +95,31 @@ fn validate_messages(messages: &[Value], errors: &mut Vec<String>) {
             ));
             continue;
         };
-        match message.get("role").and_then(Value::as_str) {
-            Some("user" | "assistant") => {}
+        reject_unknown_fields(
+            message,
+            &["role", "content"],
+            &format!("messages[{message_index}]"),
+            errors,
+        );
+        let role = message.get("role").and_then(Value::as_str);
+        match role {
+            Some("user" | "assistant" | "system") => {}
             Some(_) => errors.push(format!(
-                "messages[{message_index}].role: role must be user or assistant"
+                "messages[{message_index}].role: role must be user, assistant, or system"
             )),
             None => errors.push(format!(
                 "messages[{message_index}].role: role is required and must be a string"
             )),
         }
-        if let Some(content) = message.get("content") {
-            match content {
-                Value::String(_) | Value::Null => {}
+        if role == Some("system") {
+            validate_system_message(messages, message_index, message, errors);
+        }
+        match message.get("content") {
+            None | Some(Value::Null) => errors.push(format!(
+                "messages[{message_index}].content: content is required"
+            )),
+            Some(content) => match content {
+                Value::String(_) => {}
                 Value::Array(blocks) => {
                     for (block_index, block) in blocks.iter().enumerate() {
                         let field = format!("messages[{message_index}].content[{block_index}]");
@@ -96,15 +136,495 @@ fn validate_messages(messages: &[Value], errors: &mut Vec<String>) {
                                 errors
                                     .push(format!("{field}.type: content block type is required"));
                             }
-                            _ => {}
+                            Some(block) => validate_content_block(role, block, &field, errors),
                         }
                     }
                 }
                 _ => errors.push(format!(
                     "messages[{message_index}].content: content must be a string or array"
                 )),
+            },
+        }
+    }
+}
+
+fn validate_content_block(
+    role: Option<&str>,
+    block: &Map<String, Value>,
+    field: &str,
+    errors: &mut Vec<String>,
+) {
+    let Some(kind) = block.get("type").and_then(Value::as_str) else {
+        return;
+    };
+    match (role, kind) {
+        (Some("user"), "text") | (Some("system"), "text") => {
+            validate_text_block(block, field, errors);
+        }
+        (Some("user"), "image") => validate_image_block(block, field, errors),
+        (Some("user"), "tool_result") => validate_tool_result(block, field, errors),
+        (Some("assistant"), "text") => validate_text_block(block, field, errors),
+        (Some("assistant"), "tool_use") => validate_tool_use(block, field, errors),
+        (Some("assistant"), "thinking") => {
+            reject_unknown_fields(block, &["type", "thinking", "signature"], field, errors);
+            for key in ["thinking", "signature"] {
+                if block
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+                {
+                    errors.push(format!("{field}.{key}: {key} must be a non-empty string"));
+                }
             }
         }
+        (Some("assistant"), "redacted_thinking") => {
+            reject_unknown_fields(block, &["type", "data"], field, errors);
+            if block
+                .get("data")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                errors.push(format!("{field}.data: data must be a non-empty string"));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn validate_text_block(block: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
+    reject_unknown_fields(
+        block,
+        &["type", "text", "cache_control", "citations"],
+        field,
+        errors,
+    );
+    if block.get("text").and_then(Value::as_str).is_none() {
+        errors.push(format!(
+            "{field}.text: text is required and must be a string"
+        ));
+    }
+    validate_cache_control(
+        block.get("cache_control"),
+        &format!("{field}.cache_control"),
+        errors,
+    );
+    if block.get("citations").is_some_and(|value| !value.is_null()) {
+        errors.push(format!("{field}.citations: citations are unsupported"));
+    }
+}
+
+fn validate_image_block(block: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
+    reject_unknown_fields(
+        block,
+        &["type", "source", "cache_control", "transformations"],
+        field,
+        errors,
+    );
+    validate_cache_control(
+        block.get("cache_control"),
+        &format!("{field}.cache_control"),
+        errors,
+    );
+    if block
+        .get("transformations")
+        .is_some_and(|value| !value.is_null())
+    {
+        errors.push(format!(
+            "{field}.transformations: image transformations are unsupported"
+        ));
+    }
+}
+
+fn validate_tool_result(block: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
+    reject_unknown_fields(
+        block,
+        &[
+            "type",
+            "tool_use_id",
+            "content",
+            "is_error",
+            "cache_control",
+        ],
+        field,
+        errors,
+    );
+    if block
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        errors.push(format!(
+            "{field}.tool_use_id: tool_use_id must be a non-empty string"
+        ));
+    }
+    if block
+        .get("is_error")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        errors.push(format!("{field}.is_error: is_error must be a boolean"));
+    }
+    validate_cache_control(
+        block.get("cache_control"),
+        &format!("{field}.cache_control"),
+        errors,
+    );
+    if let Some(Value::Array(parts)) = block.get("content") {
+        for (index, part) in parts.iter().enumerate() {
+            let part_field = format!("{field}.content[{index}]");
+            let Some(part) = part.as_object() else {
+                errors.push(format!("{part_field}: content block must be an object"));
+                continue;
+            };
+            match part.get("type").and_then(Value::as_str) {
+                Some("text") => validate_text_block(part, &part_field, errors),
+                Some("image") => validate_image_block(part, &part_field, errors),
+                Some(_) => {}
+                None => errors.push(format!("{part_field}.type: content block type is required")),
+            }
+        }
+    }
+}
+
+fn validate_tool_use(block: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
+    reject_unknown_fields(
+        block,
+        &["type", "id", "name", "input", "cache_control"],
+        field,
+        errors,
+    );
+    if block
+        .get("name")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        errors.push(format!("{field}.name: name must be a non-empty string"));
+    }
+    if block.get("input").is_none_or(|input| !input.is_object()) {
+        errors.push(format!("{field}.input: input must be an object"));
+    }
+    validate_cache_control(
+        block.get("cache_control"),
+        &format!("{field}.cache_control"),
+        errors,
+    );
+}
+
+fn validate_system_message(
+    messages: &[Value],
+    message_index: usize,
+    message: &Map<String, Value>,
+    errors: &mut Vec<String>,
+) {
+    let role_at = |index: usize| {
+        messages
+            .get(index)
+            .and_then(Value::as_object)
+            .and_then(|message| message.get("role"))
+            .and_then(Value::as_str)
+    };
+    if message_index == 0 || !matches!(role_at(message_index - 1), Some("user" | "system")) {
+        errors.push(format!(
+            "messages[{message_index}].role: system message must follow a user message"
+        ));
+    }
+    if message_index + 1 < messages.len()
+        && !matches!(role_at(message_index + 1), Some("assistant" | "system"))
+    {
+        errors.push(format!(
+            "messages[{message_index}].role: system message must be last or followed by an assistant message"
+        ));
+    }
+    for field in ["clear_at", "output_config"] {
+        if message.contains_key(field) {
+            errors.push(format!(
+                "messages[{message_index}].{field}: {field} is not supported by this adapter"
+            ));
+        }
+    }
+}
+
+fn validate_system(system: Option<&Value>, errors: &mut Vec<String>) {
+    let Some(system) = system else {
+        return;
+    };
+    match system {
+        Value::String(_) => {}
+        Value::Array(blocks) => {
+            for (index, block) in blocks.iter().enumerate() {
+                let field = format!("system[{index}]");
+                let Some(block) = block.as_object() else {
+                    errors.push(format!("{field}: system block must be an object"));
+                    continue;
+                };
+                if block.get("type").and_then(Value::as_str) != Some("text") {
+                    errors.push(format!("{field}.type: system block type must be text"));
+                    continue;
+                }
+                validate_text_block(block, &field, errors);
+                if block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(str::is_empty)
+                {
+                    errors.push(format!("{field}.text: system text must not be empty"));
+                }
+            }
+        }
+        _ => errors.push("system: system must be a string or array of text blocks".to_owned()),
+    }
+}
+
+fn validate_stop_sequences(stop: Option<&Value>, errors: &mut Vec<String>) {
+    let Some(stop) = stop else {
+        return;
+    };
+    let Some(sequences) = stop.as_array() else {
+        errors.push("stop_sequences: stop_sequences must be an array".to_owned());
+        return;
+    };
+    if sequences.len() > 4 {
+        errors.push(
+            "stop_sequences: OpenAI Chat Completions supports at most 4 stop sequences".to_owned(),
+        );
+    }
+    for (index, sequence) in sequences.iter().enumerate() {
+        if !sequence.is_string() {
+            errors.push(format!(
+                "stop_sequences[{index}]: stop sequence must be a string"
+            ));
+        }
+    }
+}
+
+fn validate_cache_control(value: Option<&Value>, field: &str, errors: &mut Vec<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    if value.is_null() {
+        return;
+    }
+    let Some(cache) = value.as_object() else {
+        errors.push(format!("{field}: cache_control must be an object or null"));
+        return;
+    };
+    reject_unknown_fields(cache, &["type", "ttl"], field, errors);
+    if cache.get("type").and_then(Value::as_str) != Some("ephemeral") {
+        errors.push(format!(
+            "{field}.type: cache_control type must be ephemeral"
+        ));
+    }
+    if let Some(ttl) = cache.get("ttl")
+        && !matches!(ttl.as_str(), Some("5m" | "1h"))
+    {
+        errors.push(format!("{field}.ttl: cache_control ttl must be 5m or 1h"));
+    }
+}
+
+fn validate_metadata(value: Option<&Value>, errors: &mut Vec<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    let Some(metadata) = value.as_object() else {
+        errors.push("metadata: metadata must be an object".to_owned());
+        return;
+    };
+    reject_unknown_fields(metadata, &["user_id"], "metadata", errors);
+    if let Some(user_id) = metadata.get("user_id")
+        && !user_id.is_null()
+        && user_id.as_str().is_none_or(str::is_empty)
+    {
+        errors.push("metadata.user_id: user_id must be a non-empty string or null".to_owned());
+    }
+}
+
+fn validate_output_config(
+    value: Option<&Value>,
+    request: &Map<String, Value>,
+    errors: &mut Vec<String>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    let Some(config) = value.as_object() else {
+        errors.push("output_config: output_config must be an object".to_owned());
+        return;
+    };
+    reject_unknown_fields(config, &["effort", "format"], "output_config", errors);
+    if let Some(effort) = config.get("effort")
+        && !effort.is_null()
+        && !matches!(effort.as_str(), Some("low" | "medium" | "high" | "max"))
+    {
+        errors.push("output_config.effort: effort must be low, medium, high, or max".to_owned());
+    }
+    if let Some(format) = config.get("format")
+        && !format.is_null()
+    {
+        let Some(format) = format.as_object() else {
+            errors.push("output_config.format: format must be an object or null".to_owned());
+            return;
+        };
+        reject_unknown_fields(format, &["type", "schema"], "output_config.format", errors);
+        if format.get("type").and_then(Value::as_str) != Some("json_schema") {
+            errors.push("output_config.format.type: format type must be json_schema".to_owned());
+        }
+        if format
+            .get("schema")
+            .is_none_or(|schema| !schema.is_object())
+        {
+            errors.push("output_config.format.schema: schema must be an object".to_owned());
+        }
+        if request
+            .get("messages")
+            .and_then(Value::as_array)
+            .and_then(|messages| messages.last())
+            .and_then(|message| message.get("role"))
+            .and_then(Value::as_str)
+            == Some("assistant")
+        {
+            errors.push(
+                "output_config.format: structured outputs cannot be used with assistant prefilling"
+                    .to_owned(),
+            );
+        }
+    }
+}
+
+fn validate_thinking(value: Option<&Value>, model: Option<&str>, errors: &mut Vec<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    let Some(thinking) = value.as_object() else {
+        errors.push("thinking: thinking must be an object".to_owned());
+        return;
+    };
+    reject_unknown_fields(thinking, &["type", "budget_tokens"], "thinking", errors);
+    match thinking.get("type").and_then(Value::as_str) {
+        Some("disabled") => {
+            if thinking.contains_key("budget_tokens") {
+                errors.push(
+                    "thinking.budget_tokens: budget_tokens is not valid when thinking is disabled"
+                        .to_owned(),
+                );
+            }
+        }
+        Some("enabled" | "adaptive")
+            if model.is_some_and(|model| is_glm5(model) || is_qwen3(model)) => {}
+        Some("enabled" | "adaptive") => errors.push(
+            "thinking.type: enabled and adaptive thinking have no exact OpenAI Chat Completions mapping; use output_config.effort"
+                .to_owned(),
+        ),
+        Some(_) => errors.push(
+            "thinking.type: thinking type must be enabled, disabled, or adaptive".to_owned(),
+        ),
+        None => errors.push("thinking.type: thinking type is required".to_owned()),
+    }
+}
+
+fn validate_tools_request(value: Option<&Value>, errors: &mut Vec<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    let Some(tools) = value.as_array() else {
+        errors.push("tools: tools must be an array".to_owned());
+        return;
+    };
+    for (index, tool) in tools.iter().enumerate() {
+        let field = format!("tools[{index}]");
+        let Some(tool) = tool.as_object() else {
+            errors.push(format!("{field}: tool must be an object"));
+            continue;
+        };
+        reject_unknown_fields(
+            tool,
+            &[
+                "type",
+                "name",
+                "description",
+                "input_schema",
+                "strict",
+                "cache_control",
+                "allowed_callers",
+                "defer_loading",
+            ],
+            &field,
+            errors,
+        );
+        if tool
+            .get("description")
+            .is_some_and(|value| !value.is_string())
+        {
+            errors.push(format!("{field}.description: description must be a string"));
+        }
+        if tool.get("strict").is_some_and(|value| !value.is_boolean()) {
+            errors.push(format!("{field}.strict: strict must be a boolean"));
+        }
+        validate_cache_control(
+            tool.get("cache_control"),
+            &format!("{field}.cache_control"),
+            errors,
+        );
+    }
+}
+
+fn validate_tool_choice_request(value: Option<&Value>, errors: &mut Vec<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    let Some(choice) = value.as_object() else {
+        errors.push("tool_choice: tool_choice must be an object".to_owned());
+        return;
+    };
+    reject_unknown_fields(
+        choice,
+        &["type", "name", "disable_parallel_tool_use"],
+        "tool_choice",
+        errors,
+    );
+    if choice
+        .get("disable_parallel_tool_use")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        errors.push(
+            "tool_choice.disable_parallel_tool_use: disable_parallel_tool_use must be a boolean"
+                .to_owned(),
+        );
+    }
+    match choice.get("type").and_then(Value::as_str) {
+        Some("tool") => {
+            if choice
+                .get("name")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                errors.push(
+                    "tool_choice.name: named tool choice requires a non-empty name".to_owned(),
+                );
+            }
+        }
+        Some("none" | "auto" | "any") => {
+            if choice.contains_key("name") {
+                errors.push("tool_choice.name: name is only valid for type tool".to_owned());
+            }
+        }
+        Some(_) => errors
+            .push("tool_choice.type: tool choice type must be none, auto, any, or tool".to_owned()),
+        None => errors.push("tool_choice.type: tool choice type is required".to_owned()),
+    }
+}
+
+fn reject_unknown_fields(
+    object: &Map<String, Value>,
+    allowed: &[&str],
+    prefix: &str,
+    errors: &mut Vec<String>,
+) {
+    for key in object.keys().filter(|key| !allowed.contains(&key.as_str())) {
+        let field = if prefix.is_empty() {
+            key.to_owned()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        errors.push(format!("{field}: unsupported field"));
     }
 }
 
@@ -119,7 +639,8 @@ fn validate_unit_interval(object: &Map<String, Value>, field: &str, errors: &mut
     }
 }
 
-pub fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> {
+pub fn convert_request(body: &Value, _base_url: &str) -> Result<Value, AppError> {
+    validate_request(body)?;
     let request = body.as_object().expect("validated request object");
     let model = request["model"].as_str().expect("validated model");
     let mut messages = Vec::new();
@@ -162,18 +683,10 @@ pub fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> 
     if let Some(stream) = request.get("stream") {
         output.insert("stream".into(), stream.clone());
     }
-    let mut max_tokens = request["max_tokens"]
+    let max_tokens = request["max_tokens"]
         .as_u64()
         .expect("validated max_tokens");
-    if is_azure(base_url) && max_tokens == 1 {
-        max_tokens = 32;
-    }
-    let max_field = if is_openai_reasoning(model) {
-        "max_completion_tokens"
-    } else {
-        "max_tokens"
-    };
-    output.insert(max_field.into(), Value::from(max_tokens));
+    output.insert("max_completion_tokens".into(), Value::from(max_tokens));
     if request.get("stream").and_then(Value::as_bool) == Some(true) {
         output.insert("stream_options".into(), json!({"include_usage": true}));
     }
@@ -198,6 +711,33 @@ pub fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> 
             output.insert("parallel_tool_calls".into(), Value::Bool(false));
         }
     }
+    if let Some(user_id) = request
+        .get("metadata")
+        .and_then(|metadata| metadata.get("user_id"))
+        .and_then(Value::as_str)
+    {
+        output.insert(
+            "safety_identifier".into(),
+            Value::String(user_id.to_owned()),
+        );
+    }
+    if let Some(format) = request
+        .get("output_config")
+        .and_then(|config| config.get("format"))
+        && !format.is_null()
+    {
+        output.insert(
+            "response_format".into(),
+            json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "anthropic_output",
+                    "schema": format["schema"].clone(),
+                    "strict": true
+                }
+            }),
+        );
+    }
     apply_model_options(request, &mut output, model)?;
     Ok(Value::Object(output))
 }
@@ -218,7 +758,7 @@ fn system_content(system: &Value) -> String {
             .filter_map(|block| block.get("text").and_then(Value::as_str))
             .collect::<Vec<_>>()
             .join("\n"),
-        _ => String::new(),
+        _ => unreachable!("validated system content"),
     }
 }
 
@@ -254,16 +794,42 @@ fn convert_message(
     }
 
     let blocks = content.as_array().expect("validated content array");
-    if role == "user" {
-        convert_user_blocks(blocks, message_index, ids)
-    } else {
-        Ok(vec![convert_assistant_blocks(
+    match role {
+        "user" => convert_user_blocks(blocks, message_index, ids),
+        "system" => Ok(vec![convert_system_blocks(blocks, message_index)?]),
+        _ => Ok(vec![convert_assistant_blocks(
             blocks,
             message_index,
             ids,
             stripped_thinking,
-        )?])
+        )?]),
     }
+}
+
+fn convert_system_blocks(blocks: &[Value], message_index: usize) -> Result<Value, AppError> {
+    let mut text = Vec::new();
+    for (block_index, block) in blocks.iter().enumerate() {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => text.push(
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        AppError::bad_request(format!(
+                            "messages[{message_index}].content[{block_index}].text: text is required"
+                        ))
+                    })?
+                    .to_owned(),
+            ),
+            Some(kind) => {
+                return Err(AppError::bad_request(format!(
+                    "messages[{message_index}].content[{block_index}]: unsupported system content block {kind}"
+                )));
+            }
+            None => unreachable!("validated content block type"),
+        }
+    }
+    Ok(json!({"role": "system", "content": text.join("\n")}))
 }
 
 fn convert_user_blocks(
@@ -279,14 +845,14 @@ fn convert_user_blocks(
         match block.get("type").and_then(Value::as_str) {
             Some("text") => user_parts.push(json!({
                 "type": "text",
-                "text": block.get("text").and_then(Value::as_str).unwrap_or("")
+                "text": block.get("text").and_then(Value::as_str).expect("validated text")
             })),
             Some("image") => user_parts.push(convert_image(block)?),
             Some("tool_result") => {
                 let original_id = block
                     .get("tool_use_id")
                     .and_then(Value::as_str)
-                    .unwrap_or("");
+                    .expect("validated tool_use_id");
                 let resolved_id = resolve_tool_result_id(original_id, ids);
                 let (text, images) = extract_tool_result(block, message_index, block_index)?;
                 let is_error = block.get("is_error").and_then(Value::as_bool) == Some(true);
@@ -355,7 +921,7 @@ fn extract_tool_result(
                     Some("text") => text.push(
                         part.get("text")
                             .and_then(Value::as_str)
-                            .unwrap_or("")
+                            .expect("validated text")
                             .to_owned(),
                     ),
                     Some("image") => images.push(convert_image(part)?),
@@ -385,6 +951,20 @@ fn convert_image(block: &Value) -> Result<Value, AppError> {
         .get("type")
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::bad_request("image.source.type is required"))?;
+    let allowed_source_fields: &[&str] = match source_type {
+        "base64" => &["type", "media_type", "data"],
+        "url" => &["type", "url"],
+        "file" | "file_id" => &["type", "file_id"],
+        _ => &["type"],
+    };
+    if let Some(field) = source
+        .keys()
+        .find(|key| !allowed_source_fields.contains(&key.as_str()))
+    {
+        return Err(AppError::bad_request(format!(
+            "image.source.{field}: unsupported field"
+        )));
+    }
     let url = match source_type {
         "base64" => {
             let media_type = source
@@ -444,7 +1024,12 @@ fn convert_assistant_blocks(
     let mut tool_calls = Vec::new();
     for (block_index, block) in blocks.iter().enumerate() {
         match block.get("type").and_then(Value::as_str) {
-            Some("text") => text.push_str(block.get("text").and_then(Value::as_str).unwrap_or("")),
+            Some("text") => text.push_str(
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .expect("validated text"),
+            ),
             Some("thinking" | "redacted_thinking") => *stripped_thinking = true,
             Some("tool_use") => {
                 let original = block.get("id").and_then(Value::as_str).unwrap_or("");
@@ -457,10 +1042,10 @@ fn convert_assistant_blocks(
                     "id": id,
                     "type": "function",
                     "function": {
-                        "name": block.get("name").cloned().unwrap_or(Value::Null),
+                        "name": block.get("name").and_then(Value::as_str).expect("validated tool name"),
                         "arguments": serde_json::to_string(
-                            block.get("input").unwrap_or(&Value::Object(Map::new()))
-                        ).unwrap_or_else(|_| "{}".to_owned())
+                            block.get("input").expect("validated tool input")
+                        ).expect("JSON value serialization")
                     }
                 }));
             }
@@ -605,12 +1190,11 @@ fn convert_tools(tools: &[Value]) -> Result<Value, AppError> {
             })?;
         let mut function = Map::from_iter([
             ("name".into(), Value::String(name.to_owned())),
-            (
-                "description".into(),
-                tool.get("description").cloned().unwrap_or(Value::Null),
-            ),
             ("parameters".into(), schema.clone()),
         ]);
+        if let Some(description) = tool.get("description") {
+            function.insert("description".into(), description.clone());
+        }
         if let Some(strict) = tool.get("strict") {
             function.insert("strict".into(), strict.clone());
         }
@@ -633,11 +1217,6 @@ fn apply_model_options(
         .and_then(|config| config.get("effort"))
         .and_then(Value::as_str);
 
-    if is_openai_reasoning(model)
-        && let Some(value) = openai_effort(effort, thinking_type, request)
-    {
-        output.insert("reasoning_effort".into(), Value::String(value.into()));
-    }
     if is_glm5(model) {
         if let Some(kind) = thinking_type {
             output.insert(
@@ -659,45 +1238,29 @@ fn apply_model_options(
         {
             output.insert("reasoning_effort".into(), Value::String(value.into()));
         }
+        return Ok(());
     }
-    if is_qwen3(model) && matches!(thinking_type, Some("enabled" | "adaptive")) {
-        if request.get("stream").and_then(Value::as_bool) != Some(true) {
-            return Err(AppError::new(
-                StatusCode::BAD_REQUEST,
-                "Qwen thinking mode in this adapter requires stream=true because the upstream provider only supports it reliably on streaming calls.",
-            ));
+    if is_qwen3(model) {
+        if matches!(thinking_type, Some("enabled" | "adaptive")) {
+            if request.get("stream").and_then(Value::as_bool) != Some(true) {
+                return Err(AppError::new(
+                    StatusCode::BAD_REQUEST,
+                    "Qwen thinking mode in this adapter requires stream=true because the upstream provider only supports it reliably on streaming calls.",
+                ));
+            }
+            output.insert("enable_thinking".into(), Value::Bool(true));
         }
-        output.insert("enable_thinking".into(), Value::Bool(true));
+        return Ok(());
+    }
+    if let Some(effort) = effort {
+        output.insert(
+            "reasoning_effort".into(),
+            Value::String(if effort == "max" { "xhigh" } else { effort }.to_owned()),
+        );
+    } else if thinking_type == Some("disabled") {
+        output.insert("reasoning_effort".into(), Value::String("none".into()));
     }
     Ok(())
-}
-
-fn openai_effort<'a>(
-    effort: Option<&'a str>,
-    thinking_type: Option<&str>,
-    request: &Map<String, Value>,
-) -> Option<&'a str> {
-    if let Some(effort) = effort {
-        return Some(match effort {
-            "max" => "xhigh",
-            other => other,
-        });
-    }
-    match thinking_type {
-        Some("adaptive") => Some("xhigh"),
-        Some("enabled") => Some(
-            match request
-                .get("thinking")
-                .and_then(|thinking| thinking.get("budget_tokens"))
-                .and_then(Value::as_u64)
-            {
-                Some(value) if value < 4_000 => "low",
-                Some(value) if value < 16_000 => "medium",
-                _ => "high",
-            },
-        ),
-        _ => None,
-    }
 }
 
 fn glm_effort(effort: Option<&str>, thinking_type: Option<&str>) -> Option<&'static str> {
@@ -710,14 +1273,59 @@ fn glm_effort(effort: Option<&str>, thinking_type: Option<&str>) -> Option<&'sta
 }
 
 pub fn convert_response(response: &Value, original_model: &str) -> Result<Value, AppError> {
-    let choice = response
+    let choices = response
         .get("choices")
         .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .ok_or_else(|| upstream_protocol_error("response is missing choices[0]"))?;
+        .ok_or_else(|| upstream_protocol_error("response is missing choices"))?;
+    if choices.len() != 1 {
+        return Err(upstream_protocol_error(
+            "response must contain exactly one choice",
+        ));
+    }
+    let choice = &choices[0];
     let message = choice
         .get("message")
+        .and_then(Value::as_object)
         .ok_or_else(|| upstream_protocol_error("response is missing choices[0].message"))?;
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return Err(upstream_protocol_error(
+            "response message role must be assistant",
+        ));
+    }
+    for field in ["content", "refusal"] {
+        if message
+            .get(field)
+            .is_some_and(|value| !value.is_null() && !value.is_string())
+        {
+            return Err(upstream_protocol_error(format!(
+                "response message {field} must be a string or null"
+            )));
+        }
+    }
+    for field in ["reasoning_content", "reasoning"] {
+        if message
+            .get(field)
+            .is_some_and(|value| !value.is_null() && !value.is_string())
+        {
+            return Err(upstream_protocol_error(format!(
+                "response message {field} must be a string or null"
+            )));
+        }
+    }
+    for field in ["audio", "function_call"] {
+        if message.get(field).is_some_and(|value| !value.is_null()) {
+            return Err(upstream_protocol_error(format!(
+                "response message {field} is unsupported"
+            )));
+        }
+    }
+    if message.get("annotations").is_some_and(|value| {
+        !value.is_null() && value.as_array().is_none_or(|items| !items.is_empty())
+    }) {
+        return Err(upstream_protocol_error(
+            "response message annotations are unsupported",
+        ));
+    }
     let mut content = Vec::new();
     let reasoning = message
         .get("reasoning_content")
@@ -739,8 +1347,21 @@ pub fn convert_response(response: &Value, original_model: &str) -> Result<Value,
         content.push(json!({"type": "text", "text": text}));
     }
     let mut ids = IdContext::default();
+    if message
+        .get("tool_calls")
+        .is_some_and(|calls| !calls.is_null() && !calls.is_array())
+    {
+        return Err(upstream_protocol_error(
+            "response message tool_calls must be an array",
+        ));
+    }
     if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
         for call in calls {
+            if call.get("type").and_then(Value::as_str) != Some("function") {
+                return Err(upstream_protocol_error(
+                    "only function tool calls are supported",
+                ));
+            }
             let arguments = call
                 .pointer("/function/arguments")
                 .and_then(Value::as_str)
@@ -760,6 +1381,14 @@ pub fn convert_response(response: &Value, original_model: &str) -> Result<Value,
                 .and_then(Value::as_str)
                 .filter(|name| !name.is_empty())
                 .ok_or_else(|| upstream_protocol_error("tool call is missing function.name"))?;
+            if call
+                .get("id")
+                .is_some_and(|id| !id.is_null() && !id.is_string())
+            {
+                return Err(upstream_protocol_error(
+                    "tool call id must be a string or null",
+                ));
+            }
             let id = unique_tool_id(
                 call.get("id").and_then(Value::as_str).unwrap_or(""),
                 &mut ids,
@@ -777,6 +1406,12 @@ pub fn convert_response(response: &Value, original_model: &str) -> Result<Value,
         .and_then(Value::as_str)
         .ok_or_else(|| upstream_protocol_error("response is missing finish_reason"))?;
     let mapped_finish = map_finish_reason(finish)?;
+    let has_tools = content.iter().any(|block| block["type"] == "tool_use");
+    if (finish == "tool_calls") != has_tools {
+        return Err(upstream_protocol_error(
+            "response tool calls do not match finish_reason",
+        ));
+    }
     let filtered = finish == "content_filter";
     let refusal_explanation =
         refusal.unwrap_or("Response withheld by the upstream content filter.");
@@ -795,9 +1430,14 @@ pub fn convert_response(response: &Value, original_model: &str) -> Result<Value,
     } else {
         Value::Null
     };
-    let usage = response.get("usage");
+    let usage = response_usage(response.get("usage"))?;
+    let id = match response.get("id") {
+        Some(Value::String(id)) if !id.is_empty() => format!("msg_{id}"),
+        None | Some(Value::Null) | Some(Value::String(_)) => generated_message_id(),
+        Some(_) => return Err(upstream_protocol_error("response id must be a string")),
+    };
     Ok(json!({
-        "id": format!("msg_{}", response.get("id").and_then(Value::as_str).unwrap_or("")),
+        "id": id,
         "type": "message",
         "role": "assistant",
         "content": content,
@@ -806,7 +1446,7 @@ pub fn convert_response(response: &Value, original_model: &str) -> Result<Value,
         "stop_details": stop_details,
         "stop_sequence": Value::Null,
         "container": Value::Null,
-        "usage": response_usage(usage)
+        "usage": usage
     }))
 }
 
@@ -825,24 +1465,61 @@ pub(crate) fn map_finish_reason(reason: &str) -> Result<&'static str, AppError> 
     }
 }
 
-pub(crate) fn thinking_tokens(usage: Option<&Value>) -> Option<u64> {
-    usage
-        .and_then(|value| value.pointer("/completion_tokens_details/reasoning_tokens"))
-        .and_then(Value::as_u64)
-}
-
-fn response_usage(usage: Option<&Value>) -> Value {
-    json!({
-        "input_tokens": usage.and_then(|value| value.get("prompt_tokens")).and_then(Value::as_u64).unwrap_or(0),
-        "output_tokens": usage.and_then(|value| value.get("completion_tokens")).and_then(Value::as_u64).unwrap_or(0),
+fn response_usage(usage: Option<&Value>) -> Result<Value, AppError> {
+    let usage = match usage {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(usage)) => Some(usage),
+        Some(_) => return Err(upstream_protocol_error("response usage must be an object")),
+    };
+    let token = |field: &str| -> Result<Value, AppError> {
+        match usage.and_then(|usage| usage.get(field)) {
+            None | Some(Value::Null) => Ok(Value::Null),
+            Some(value) => value.as_u64().map(Value::from).ok_or_else(|| {
+                upstream_protocol_error(format!("response usage.{field} must be an integer"))
+            }),
+        }
+    };
+    let details = match usage.and_then(|usage| usage.get("completion_tokens_details")) {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(details)) => Some(details),
+        Some(_) => {
+            return Err(upstream_protocol_error(
+                "response usage.completion_tokens_details must be an object or null",
+            ));
+        }
+    };
+    let thinking = match details.and_then(|details| details.get("reasoning_tokens")) {
+        None | Some(Value::Null) => Value::Null,
+        Some(value) => value
+            .as_u64()
+            .map(|tokens| json!({"thinking_tokens": tokens}))
+            .ok_or_else(|| {
+                upstream_protocol_error(
+                    "response usage.completion_tokens_details.reasoning_tokens must be an integer",
+                )
+            })?,
+    };
+    Ok(json!({
+        "input_tokens": token("prompt_tokens")?,
+        "output_tokens": token("completion_tokens")?,
         "cache_creation_input_tokens": Value::Null,
         "cache_read_input_tokens": Value::Null,
-        "output_tokens_details": thinking_tokens(usage).map(|tokens| json!({"thinking_tokens": tokens})),
+        "output_tokens_details": thinking,
         "server_tool_use": Value::Null,
         "cache_creation": Value::Null,
         "inference_geo": Value::Null,
         "service_tier": Value::Null,
-    })
+    }))
+}
+
+fn generated_message_id() -> String {
+    let suffix: String = (0..24)
+        .map(|_| {
+            const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            CHARS[rand::rng().random_range(0..CHARS.len())] as char
+        })
+        .collect();
+    format!("msg_{suffix}")
 }
 
 fn upstream_protocol_error(message: impl Into<String>) -> AppError {
@@ -852,11 +1529,6 @@ fn upstream_protocol_error(message: impl Into<String>) -> AppError {
 fn normalized(model: &str) -> String {
     model.trim().to_lowercase()
 }
-fn is_openai_reasoning(model: &str) -> bool {
-    let model = normalized(model);
-    model.starts_with("gpt-5")
-        || (model.starts_with('o') && model.as_bytes().get(1).is_some_and(u8::is_ascii_digit))
-}
 fn is_glm5(model: &str) -> bool {
     normalized(model).starts_with("glm-5")
 }
@@ -865,14 +1537,6 @@ fn is_glm52(model: &str) -> bool {
 }
 fn is_qwen3(model: &str) -> bool {
     normalized(model).starts_with("qwen3")
-}
-fn is_azure(base_url: &str) -> bool {
-    Url::parse(base_url)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_lowercase))
-        .is_some_and(|host| {
-            host.ends_with(".openai.azure.com") || host.contains(".services.ai.azure.com")
-        })
 }
 
 #[cfg(test)]
@@ -906,7 +1570,7 @@ mod tests {
         let invalid_role = json!({
             "model": "gpt-4",
             "max_tokens": 1,
-            "messages": [{"role": "system", "content": "hidden"}]
+            "messages": [{"role": "tool", "content": "hidden"}]
         });
         let error = validate_request(&invalid_role).unwrap_err();
         assert!(error.message.contains("messages[0].role"));
@@ -918,6 +1582,43 @@ mod tests {
         });
         let error = validate_request(&cache_only).unwrap_err();
         assert!(error.message.contains("cache-only"));
+    }
+
+    #[test]
+    fn validates_mid_conversation_system_message_placement() {
+        let valid = json!({
+            "model": "gpt-5.2", "max_tokens": 10,
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "system", "content": "be concise"}
+            ]
+        });
+        validate_request(&valid).unwrap();
+
+        for body in [
+            json!({
+                "model": "gpt-5.2", "max_tokens": 10,
+                "messages": [{"role": "system", "content": "first"}]
+            }),
+            json!({
+                "model": "gpt-5.2", "max_tokens": 10,
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"},
+                    {"role": "system", "content": "misplaced"}
+                ]
+            }),
+            json!({
+                "model": "gpt-5.2", "max_tokens": 10,
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "system", "content": "misplaced"},
+                    {"role": "user", "content": "continue"}
+                ]
+            }),
+        ] {
+            assert!(validate_request(&body).is_err());
+        }
     }
 
     #[test]
@@ -946,6 +1647,77 @@ mod tests {
         assert_eq!(converted["tools"][0]["function"]["strict"], true);
         assert_eq!(converted["tool_choice"]["function"]["name"], "lookup");
         assert_eq!(converted["parallel_tool_calls"], false);
+    }
+
+    #[test]
+    fn validates_strict_request_fields_and_maps_exact_options() {
+        for body in [
+            json!({"model": "gpt-5", "max_tokens": 1, "messages": [{"role": "user"}]}),
+            json!({"model": "gpt-5", "max_tokens": 1, "messages": [{"role": "user", "content": null}]}),
+            json!({"model": "gpt-5", "max_tokens": 1, "messages": [{"role": "user", "content": "ok"}], "top_k": 1}),
+            json!({"model": "gpt-5", "max_tokens": 1, "messages": [{"role": "user", "content": "ok"}], "tool_choice": {"type": "auto", "name": "lookup"}}),
+            json!({"model": "gpt-5", "max_tokens": 1, "messages": [{"role": "user", "content": "ok"}], "cache_control": {"type": "ephemeral", "ttl": "2h"}}),
+            json!({"model": "gpt-5", "max_tokens": 1, "messages": [{"role": "user", "content": "ok"}], "thinking": {"type": "enabled", "budget_tokens": 1024}}),
+        ] {
+            assert!(
+                validate_request(&body).is_err(),
+                "body should be rejected: {body}"
+            );
+        }
+
+        let body = json!({
+            "model": "gpt-5",
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ok"}],
+            "metadata": {"user_id": "user_1"},
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            "output_config": {
+                "effort": "high",
+                "format": {"type": "json_schema", "schema": {"type": "object"}}
+            }
+        });
+        let converted = convert_request(&body, "https://api.openai.com/v1").unwrap();
+        assert_eq!(converted["max_completion_tokens"], 1);
+        assert_eq!(converted["reasoning_effort"], "high");
+        assert_eq!(converted["safety_identifier"], "user_1");
+        assert_eq!(converted["response_format"]["type"], "json_schema");
+        assert_eq!(converted["response_format"]["json_schema"]["strict"], true);
+        assert!(converted.get("cache_control").is_none());
+
+        let disabled = json!({
+            "model": "gpt-5", "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ok"}],
+            "thinking": {"type": "disabled"}
+        });
+        assert_eq!(
+            convert_request(&disabled, "https://api.openai.com/v1").unwrap()["reasoning_effort"],
+            "none"
+        );
+
+        let qwen = json!({
+            "model": "qwen3-coder", "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ok"}],
+            "thinking": {"type": "disabled"},
+            "output_config": {"effort": "high"}
+        });
+        assert!(
+            convert_request(&qwen, "https://api.openai.com/v1")
+                .unwrap()
+                .get("reasoning_effort")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rejects_structured_output_with_assistant_prefill() {
+        let body = json!({
+            "model": "gpt-5", "max_tokens": 10,
+            "messages": [{"role": "assistant", "content": "{"}],
+            "output_config": {
+                "format": {"type": "json_schema", "schema": {"type": "object"}}
+            }
+        });
+        assert!(validate_request(&body).is_err());
     }
 
     #[test]
@@ -983,7 +1755,7 @@ mod tests {
         let valid = json!({
             "model": "gpt-4", "max_tokens": 10,
             "messages": [{"role": "assistant", "content": [
-                {"type": "thinking", "thinking": "private"},
+                {"type": "thinking", "thinking": "private", "signature": "sig"},
                 {"type": "text", "text": "visible"}
             ]}]
         });
@@ -1151,15 +1923,26 @@ mod tests {
             ("length", "max_tokens"),
             ("tool_calls", "tool_use"),
         ] {
-            let response = json!({
+            let mut response = json!({
                 "id": "chatcmpl_1",
-                "choices": [{"message": {"content": "ok"}, "finish_reason": finish}],
+                "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": finish}],
                 "usage": {
                     "prompt_tokens": 11,
                     "completion_tokens": 7,
                     "completion_tokens_details": {"reasoning_tokens": 3}
                 }
             });
+            if finish == "tool_calls" {
+                response["choices"][0]["message"] = json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "toolu_1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"}
+                    }]
+                });
+            }
             let converted = convert_response(&response, "model").unwrap();
             assert_eq!(converted["stop_reason"], expected);
             assert_eq!(converted["stop_details"], Value::Null);
@@ -1179,7 +1962,7 @@ mod tests {
         let response = json!({
             "id": "chatcmpl_1",
             "choices": [{
-                "message": {"content": "partial", "refusal": "Cannot comply."},
+                "message": {"role": "assistant", "content": "partial", "refusal": "Cannot comply."},
                 "finish_reason": "content_filter"
             }]
         });
@@ -1197,7 +1980,7 @@ mod tests {
 
         let filtered = json!({
             "id": "chatcmpl_2",
-            "choices": [{"message": {"content": null}, "finish_reason": "content_filter"}]
+            "choices": [{"message": {"role": "assistant", "content": null}, "finish_reason": "content_filter"}]
         });
         let converted = convert_response(&filtered, "model").unwrap();
         assert_eq!(
@@ -1211,24 +1994,24 @@ mod tests {
         for response in [
             json!({
                 "id": "chatcmpl_1",
-                "choices": [{"message": {"reasoning_content": "private"}, "finish_reason": "stop"}]
+                "choices": [{"message": {"role": "assistant", "reasoning_content": "private"}, "finish_reason": "stop"}]
             }),
             json!({
                 "id": "chatcmpl_2",
-                "choices": [{"message": {"tool_calls": [{
-                    "id": "toolu_1", "function": {"name": "lookup", "arguments": "not json"}
+                "choices": [{"message": {"role": "assistant", "tool_calls": [{
+                    "id": "toolu_1", "type": "function", "function": {"name": "lookup", "arguments": "not json"}
                 }]}, "finish_reason": "tool_calls"}]
             }),
             json!({
                 "id": "chatcmpl_3",
-                "choices": [{"message": {"tool_calls": [{
-                    "id": "toolu_1", "function": {"name": "lookup", "arguments": "[]"}
+                "choices": [{"message": {"role": "assistant", "tool_calls": [{
+                    "id": "toolu_1", "type": "function", "function": {"name": "lookup", "arguments": "[]"}
                 }]}, "finish_reason": "tool_calls"}]
             }),
             json!({
                 "id": "chatcmpl_4",
-                "choices": [{"message": {"tool_calls": [{
-                    "id": "toolu_1", "function": {"arguments": "{}"}
+                "choices": [{"message": {"role": "assistant", "tool_calls": [{
+                    "id": "toolu_1", "type": "function", "function": {"arguments": "{}"}
                 }]}, "finish_reason": "tool_calls"}]
             }),
         ] {
@@ -1242,9 +2025,46 @@ mod tests {
         for reason in ["function_call", "provider_magic"] {
             let response = json!({
                 "id": "chatcmpl_1",
-                "choices": [{"message": {"content": "ok"}, "finish_reason": reason}]
+                "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": reason}]
             });
             assert!(convert_response(&response, "model").is_err());
+        }
+    }
+
+    #[test]
+    fn distinguishes_missing_usage_and_repairs_missing_response_ids() {
+        let response = json!({
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]
+        });
+        let first = convert_response(&response, "model").unwrap();
+        let second = convert_response(&response, "model").unwrap();
+        assert!(first["id"].as_str().unwrap().starts_with("msg_"));
+        assert_ne!(first["id"], second["id"]);
+        assert_eq!(first["usage"]["input_tokens"], Value::Null);
+        assert_eq!(first["usage"]["output_tokens"], Value::Null);
+
+        let zero = json!({
+            "id": "chatcmpl_1",
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0}
+        });
+        let zero = convert_response(&zero, "model").unwrap();
+        assert_eq!(zero["usage"]["input_tokens"], 0);
+        assert_eq!(zero["usage"]["output_tokens"], 0);
+    }
+
+    #[test]
+    fn rejects_malformed_upstream_response_fields() {
+        for response in [
+            json!({"choices": [{"message": {"role": "user", "content": "ok"}, "finish_reason": "stop"}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "ok", "tool_calls": [{"type": "custom"}]}, "finish_reason": "tool_calls"}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}], "usage": "bad"}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": "1"}}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "tool_calls"}]}),
+            json!({"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "toolu_1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]}, "finish_reason": "stop"}]}),
+        ] {
+            let error = convert_response(&response, "model").unwrap_err();
+            assert_eq!(error.status, StatusCode::BAD_GATEWAY);
         }
     }
 }
