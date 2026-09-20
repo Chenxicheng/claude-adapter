@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "tests": {
+    "upstream": {
+      "passed": true,
+      "status": 200,
+      "responseModel": "qwen/qwen3.6-35b-a3b",
+      "finishReason": "stop",
+      "contentMatched": true,
+      "reasoningTokens": 198,
+      "inputTokens": 16,
+      "outputTokens": 204,
+      "errorType": null
+    },
+    "adapter": {
+      "passed": true,
+      "status": 200,
+      "eventTypes": [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop"
+      ],
+      "contentMatched": true,
+      "stopReason": "end_turn",
+      "errorTypes": []
+    },
+    "health": {
+      "passed": true,
+      "status": 200
+    },
+    "claudeText": {
+      "passed": true,
+      "exitCode": 0,
+      "expectedContentObserved": true
+    },
+    "claudeRead": {
+      "passed": true,
+      "exitCode": 0,
+      "expectedContentObserved": true
+    }
+  },
+  "model": "qwen/qwen3.6-35b-a3b",
+  "passed": true
+}

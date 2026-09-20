@@ -8,7 +8,7 @@ module.exports = [
   },
   js.configs.recommended,
   {
-    files: ['src/**/*.ts', 'tests/**/*.ts'],
+    files: ['src/**/*.ts', 'tests/**/*.ts', 'tests/**/*.mjs'],
     languageOptions: {
       parser: tsParser,
       ecmaVersion: 'latest',
@@ -23,6 +23,8 @@ module.exports = [
         exports: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
+        fetch: 'readonly',
+        AbortSignal: 'readonly',
         jest: 'readonly',
         describe: 'readonly',
         it: 'readonly',
