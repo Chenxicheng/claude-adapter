@@ -77,7 +77,10 @@ jobs:
       - name: Build package artifacts and clean-install test
         env:
           CLEAN_INSTALL: '1'
-        run: npm run release:assets
+        run: |
+          npm run release:assets
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          zip -j "release/claude-adapter-$PACKAGE_VERSION-offline.zip" "release/claude-adapter-$PACKAGE_VERSION.tgz"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
