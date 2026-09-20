@@ -16,6 +16,8 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 - **Protocol validation**: Strictly validates supported Anthropic request fields, nested content, tool controls, structured output, and OpenAI upstream response shapes instead of silently dropping malformed data.
 - **Streaming**: Buffers split tool-call names and arguments, preserves sequential content-block indices, and reports missing final token usage as unknown rather than zero.
+- **Upstream compatibility**: Normalizes mid-conversation system instructions, restores model-aware token and reasoning fields, validates tool relationships locally, and omits no-op fields that strict OpenAI-compatible providers may reject.
+- **Tool history**: Preserves GLM/Qwen tool-turn reasoning and keeps tool-result images ahead of subsequent ordinary user content.
 
 ---
 

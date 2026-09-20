@@ -78,7 +78,10 @@ pub fn validate_request(body: &Value) -> Result<(), AppError> {
         &mut errors,
     );
     validate_tools_request(object.get("tools"), &mut errors);
-    validate_tool_choice_request(object.get("tool_choice"), &mut errors);
+    validate_tool_choice_request(object.get("tool_choice"), object.get("tools"), &mut errors);
+    if let Some(messages) = object.get("messages").and_then(Value::as_array) {
+        validate_tool_history(messages, &mut errors);
+    }
 
     if errors.is_empty() {
         Ok(())
@@ -295,9 +298,11 @@ fn validate_tool_use(block: &Map<String, Value>, field: &str, errors: &mut Vec<S
     if block
         .get("name")
         .and_then(Value::as_str)
-        .is_none_or(str::is_empty)
+        .is_none_or(|name| !is_valid_tool_name(name))
     {
-        errors.push(format!("{field}.name: name must be a non-empty string"));
+        errors.push(format!(
+            "{field}.name: name must match [A-Za-z0-9_-]{{1,64}}"
+        ));
     }
     if block.get("input").is_none_or(|input| !input.is_object()) {
         errors.push(format!("{field}.input: input must be an object"));
@@ -388,9 +393,9 @@ fn validate_stop_sequences(stop: Option<&Value>, errors: &mut Vec<String>) {
         );
     }
     for (index, sequence) in sequences.iter().enumerate() {
-        if !sequence.is_string() {
+        if sequence.as_str().is_none_or(str::is_empty) {
             errors.push(format!(
-                "stop_sequences[{index}]: stop sequence must be a string"
+                "stop_sequences[{index}]: stop sequence must be a non-empty string"
             ));
         }
     }
@@ -528,6 +533,7 @@ fn validate_tools_request(value: Option<&Value>, errors: &mut Vec<String>) {
         errors.push("tools: tools must be an array".to_owned());
         return;
     };
+    let mut names = HashSet::new();
     for (index, tool) in tools.iter().enumerate() {
         let field = format!("tools[{index}]");
         let Some(tool) = tool.as_object() else {
@@ -549,6 +555,34 @@ fn validate_tools_request(value: Option<&Value>, errors: &mut Vec<String>) {
             &field,
             errors,
         );
+        match tool.get("type") {
+            None => {}
+            Some(Value::String(kind)) if kind == "custom" => {}
+            Some(Value::String(kind)) => errors.push(format!(
+                "{field}.type: Anthropic server tool {kind} is unsupported"
+            )),
+            Some(_) => errors.push(format!(
+                "{field}.type: tool type must be custom when provided"
+            )),
+        }
+        match tool.get("name").and_then(Value::as_str) {
+            Some(name) if is_valid_tool_name(name) => {
+                if !names.insert(name) {
+                    errors.push(format!("{field}.name: duplicate tool name {name}"));
+                }
+            }
+            _ => errors.push(format!(
+                "{field}.name: name must match [A-Za-z0-9_-]{{1,64}}"
+            )),
+        }
+        if tool
+            .get("input_schema")
+            .is_none_or(|schema| !schema.is_object())
+        {
+            errors.push(format!(
+                "{field}.input_schema: input_schema must be an object"
+            ));
+        }
         if tool
             .get("description")
             .is_some_and(|value| !value.is_string())
@@ -563,10 +597,19 @@ fn validate_tools_request(value: Option<&Value>, errors: &mut Vec<String>) {
             &format!("{field}.cache_control"),
             errors,
         );
+        if tool.contains_key("allowed_callers") || tool.contains_key("defer_loading") {
+            errors.push(format!(
+                "{field}: allowed_callers and defer_loading are unsupported"
+            ));
+        }
     }
 }
 
-fn validate_tool_choice_request(value: Option<&Value>, errors: &mut Vec<String>) {
+fn validate_tool_choice_request(
+    value: Option<&Value>,
+    tools: Option<&Value>,
+    errors: &mut Vec<String>,
+) {
     let Some(value) = value else {
         return;
     };
@@ -589,26 +632,141 @@ fn validate_tool_choice_request(value: Option<&Value>, errors: &mut Vec<String>)
                 .to_owned(),
         );
     }
+    let declared_tools: HashSet<&str> = tools
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect();
     match choice.get("type").and_then(Value::as_str) {
-        Some("tool") => {
-            if choice
-                .get("name")
-                .and_then(Value::as_str)
-                .is_none_or(str::is_empty)
-            {
-                errors.push(
-                    "tool_choice.name: named tool choice requires a non-empty name".to_owned(),
-                );
+        Some("tool") => match choice.get("name").and_then(Value::as_str) {
+            Some(name) if !is_valid_tool_name(name) => {
+                errors.push("tool_choice.name: name must match [A-Za-z0-9_-]{1,64}".to_owned())
             }
-        }
-        Some("none" | "auto" | "any") => {
+            Some(name) if !declared_tools.contains(name) => errors.push(format!(
+                "tool_choice.name: named tool choice references undeclared tool {name}"
+            )),
+            Some(_) => {}
+            None => errors
+                .push("tool_choice.name: named tool choice requires a non-empty name".to_owned()),
+        },
+        Some("any") => {
             if choice.contains_key("name") {
                 errors.push("tool_choice.name: name is only valid for type tool".to_owned());
+            }
+            if declared_tools.is_empty() {
+                errors.push("tool_choice.type: any requires at least one tool".to_owned());
+            }
+        }
+        Some("none" | "auto") => {
+            if choice.contains_key("name") {
+                errors.push("tool_choice.name: name is only valid for type tool".to_owned());
+            }
+            if choice.get("type").and_then(Value::as_str) == Some("none")
+                && choice.contains_key("disable_parallel_tool_use")
+            {
+                errors.push(
+                    "tool_choice.disable_parallel_tool_use: field is not valid for type none"
+                        .to_owned(),
+                );
             }
         }
         Some(_) => errors
             .push("tool_choice.type: tool choice type must be none, auto, any, or tool".to_owned()),
         None => errors.push("tool_choice.type: tool choice type is required".to_owned()),
+    }
+}
+
+fn is_valid_tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn validate_tool_history(messages: &[Value], errors: &mut Vec<String>) {
+    let mut pending: Option<(usize, Vec<String>)> = None;
+    for (message_index, message) in messages.iter().enumerate() {
+        let Some(message) = message.as_object() else {
+            continue;
+        };
+        let role = message.get("role").and_then(Value::as_str);
+        let blocks = message.get("content").and_then(Value::as_array);
+        let result_ids: Vec<String> = blocks
+            .into_iter()
+            .flatten()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+            .filter_map(|block| {
+                block
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect();
+
+        if let Some((assistant_index, expected_ids)) = pending.take() {
+            if role != Some("user") {
+                errors.push(format!(
+                    "messages[{message_index}]: tool results must immediately follow messages[{assistant_index}]"
+                ));
+            } else {
+                let mut expected = HashMap::new();
+                let mut actual = HashMap::new();
+                for id in expected_ids {
+                    *expected.entry(id).or_insert(0usize) += 1;
+                }
+                for id in &result_ids {
+                    *actual.entry(id.clone()).or_insert(0usize) += 1;
+                }
+                if expected != actual {
+                    errors.push(format!(
+                        "messages[{message_index}]: tool_result IDs must exactly match tool_use IDs from messages[{assistant_index}]"
+                    ));
+                }
+                if let Some(blocks) = blocks {
+                    let mut saw_non_result = false;
+                    for (block_index, block) in blocks.iter().enumerate() {
+                        if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+                            if saw_non_result {
+                                errors.push(format!(
+                                    "messages[{message_index}].content[{block_index}]: tool_result blocks must precede ordinary user content"
+                                ));
+                            }
+                        } else {
+                            saw_non_result = true;
+                        }
+                    }
+                }
+            }
+        } else if !result_ids.is_empty() {
+            errors.push(format!(
+                "messages[{message_index}]: tool_result has no immediately preceding tool_use turn"
+            ));
+        }
+
+        if role == Some("assistant") {
+            let tool_ids: Vec<String> = blocks
+                .into_iter()
+                .flatten()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+                .map(|block| {
+                    block
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                })
+                .collect();
+            if !tool_ids.is_empty() {
+                pending = Some((message_index, tool_ids));
+            }
+        }
+    }
+    if let Some((assistant_index, _)) = pending {
+        errors.push(format!(
+            "messages[{assistant_index}]: tool_use turn is missing its following tool_result message"
+        ));
     }
 }
 
@@ -639,87 +797,112 @@ fn validate_unit_interval(object: &Map<String, Value>, field: &str, errors: &mut
     }
 }
 
-pub fn convert_request(body: &Value, _base_url: &str) -> Result<Value, AppError> {
+pub fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> {
     validate_request(body)?;
     let request = body.as_object().expect("validated request object");
     let model = request["model"].as_str().expect("validated model");
     let mut messages = Vec::new();
+    let mut system_parts = Vec::new();
 
     if let Some(system) = request.get("system") {
         let content = system_content(system);
         let content = strip_billing_header(&content);
         if !content.is_empty() {
-            messages.push(json!({"role": "system", "content": content}));
+            system_parts.push(content);
         }
     }
 
     let mut ids = IdContext::default();
     let mut stripped_thinking = false;
+    let preserve_reasoning = is_glm5(model) || is_qwen3(model);
     for (message_index, message) in request["messages"]
         .as_array()
         .expect("validated messages")
         .iter()
         .enumerate()
     {
+        if message.get("role").and_then(Value::as_str) == Some("system") {
+            let content = message_content_text(message);
+            if !content.is_empty() {
+                system_parts.push(content);
+            }
+            continue;
+        }
         messages.extend(convert_message(
             message,
             message_index,
             &mut ids,
             &mut stripped_thinking,
+            preserve_reasoning,
         )?);
-    }
-    if stripped_thinking {
-        eprintln!("[adapter] Stripped unsupported Anthropic thinking history from request");
     }
     if messages.is_empty() {
         return Err(AppError::bad_request(
             "No messages after conversion: all input messages had missing content",
         ));
     }
-
+    if !system_parts.is_empty() {
+        messages.insert(
+            0,
+            json!({"role": "system", "content": system_parts.join("\n\n")}),
+        );
+    }
+    if stripped_thinking {
+        eprintln!("[adapter] Stripped unsupported Anthropic thinking history from request");
+    }
     let mut output = Map::new();
     output.insert("model".into(), Value::String(model.to_owned()));
     output.insert("messages".into(), Value::Array(messages));
     if let Some(stream) = request.get("stream") {
         output.insert("stream".into(), stream.clone());
     }
-    let max_tokens = request["max_tokens"]
+    let mut max_tokens = request["max_tokens"]
         .as_u64()
         .expect("validated max_tokens");
-    output.insert("max_completion_tokens".into(), Value::from(max_tokens));
+    if is_azure(base_url) && max_tokens == 1 {
+        max_tokens = 32;
+    }
+    let max_field = if is_openai_reasoning(model) {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    };
+    output.insert(max_field.into(), Value::from(max_tokens));
     if request.get("stream").and_then(Value::as_bool) == Some(true) {
         output.insert("stream_options".into(), json!({"include_usage": true}));
     }
     copy_fields(request, &mut output, &["temperature", "top_p"]);
-    if let Some(stop) = request.get("stop_sequences") {
-        output.insert("stop".into(), stop.clone());
+    if let Some(stop) = request
+        .get("stop_sequences")
+        .and_then(Value::as_array)
+        .filter(|stop| !stop.is_empty())
+    {
+        if does_not_support_stop(model) {
+            return Err(AppError::bad_request(format!(
+                "stop_sequences: {model} does not support stop sequences"
+            )));
+        }
+        output.insert("stop".into(), Value::Array(stop.clone()));
     }
-    if let Some(tools) = request
+    let tools = request
         .get("tools")
         .and_then(Value::as_array)
-        .filter(|tools| !tools.is_empty())
-    {
+        .filter(|tools| !tools.is_empty());
+    if let Some(tools) = tools {
         output.insert("tools".into(), convert_tools(tools)?);
     }
     if let Some(choice) = request.get("tool_choice") {
-        output.insert("tool_choice".into(), convert_tool_choice(choice)?);
-        if choice
-            .get("disable_parallel_tool_use")
-            .and_then(Value::as_bool)
-            == Some(true)
-        {
-            output.insert("parallel_tool_calls".into(), Value::Bool(false));
+        let choice_type = choice.get("type").and_then(Value::as_str);
+        if tools.is_some() || !matches!(choice_type, Some("none" | "auto")) {
+            output.insert("tool_choice".into(), convert_tool_choice(choice)?);
+            if choice
+                .get("disable_parallel_tool_use")
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                output.insert("parallel_tool_calls".into(), Value::Bool(false));
+            }
         }
-    }
-    if let Some(user_id) = request
-        .get("metadata")
-        .and_then(|metadata| metadata.get("user_id"))
-        .and_then(Value::as_str)
-    {
-        output.insert(
-            "safety_identifier".into(),
-            Value::String(user_id.to_owned()),
-        );
     }
     if let Some(format) = request
         .get("output_config")
@@ -762,6 +945,18 @@ fn system_content(system: &Value) -> String {
     }
 }
 
+fn message_content_text(message: &Value) -> String {
+    match &message["content"] {
+        Value::String(content) => content.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => unreachable!("validated system message content"),
+    }
+}
+
 fn strip_billing_header(content: &str) -> String {
     if !content.starts_with(BILLING_HEADER) {
         return content.to_owned();
@@ -784,6 +979,7 @@ fn convert_message(
     message_index: usize,
     ids: &mut IdContext,
     stripped_thinking: &mut bool,
+    preserve_reasoning: bool,
 ) -> Result<Vec<Value>, AppError> {
     let role = message.get("role").and_then(Value::as_str).unwrap_or("");
     let Some(content) = message.get("content").filter(|content| !content.is_null()) else {
@@ -796,40 +992,14 @@ fn convert_message(
     let blocks = content.as_array().expect("validated content array");
     match role {
         "user" => convert_user_blocks(blocks, message_index, ids),
-        "system" => Ok(vec![convert_system_blocks(blocks, message_index)?]),
         _ => Ok(vec![convert_assistant_blocks(
             blocks,
             message_index,
             ids,
             stripped_thinking,
+            preserve_reasoning,
         )?]),
     }
-}
-
-fn convert_system_blocks(blocks: &[Value], message_index: usize) -> Result<Value, AppError> {
-    let mut text = Vec::new();
-    for (block_index, block) in blocks.iter().enumerate() {
-        match block.get("type").and_then(Value::as_str) {
-            Some("text") => text.push(
-                block
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        AppError::bad_request(format!(
-                            "messages[{message_index}].content[{block_index}].text: text is required"
-                        ))
-                    })?
-                    .to_owned(),
-            ),
-            Some(kind) => {
-                return Err(AppError::bad_request(format!(
-                    "messages[{message_index}].content[{block_index}]: unsupported system content block {kind}"
-                )));
-            }
-            None => unreachable!("validated content block type"),
-        }
-    }
-    Ok(json!({"role": "system", "content": text.join("\n")}))
 }
 
 fn convert_user_blocks(
@@ -853,7 +1023,11 @@ fn convert_user_blocks(
                     .get("tool_use_id")
                     .and_then(Value::as_str)
                     .expect("validated tool_use_id");
-                let resolved_id = resolve_tool_result_id(original_id, ids);
+                let resolved_id = resolve_tool_result_id(original_id, ids).ok_or_else(|| {
+                    AppError::bad_request(format!(
+                        "messages[{message_index}].content[{block_index}].tool_use_id: no unmatched tool_use for {original_id}"
+                    ))
+                })?;
                 let (text, images) = extract_tool_result(block, message_index, block_index)?;
                 let is_error = block.get("is_error").and_then(Value::as_bool) == Some(true);
                 let text = if text.is_empty() && !images.is_empty() {
@@ -892,6 +1066,9 @@ fn convert_user_blocks(
     }
 
     let mut result = tool_messages;
+    if !tool_image_parts.is_empty() {
+        result.push(json!({"role": "user", "content": tool_image_parts}));
+    }
     if !user_parts.is_empty() {
         let content = if user_parts.len() == 1 && user_parts[0]["type"] == "text" {
             user_parts[0]["text"].clone()
@@ -899,9 +1076,6 @@ fn convert_user_blocks(
             Value::Array(user_parts)
         };
         result.push(json!({"role": "user", "content": content}));
-    }
-    if !tool_image_parts.is_empty() {
-        result.push(json!({"role": "user", "content": tool_image_parts}));
     }
     Ok(result)
 }
@@ -1019,8 +1193,11 @@ fn convert_assistant_blocks(
     message_index: usize,
     ids: &mut IdContext,
     stripped_thinking: &mut bool,
+    preserve_reasoning: bool,
 ) -> Result<Value, AppError> {
     let mut text = String::new();
+    let mut reasoning = String::new();
+    let mut saw_redacted_thinking = false;
     let mut tool_calls = Vec::new();
     for (block_index, block) in blocks.iter().enumerate() {
         match block.get("type").and_then(Value::as_str) {
@@ -1030,7 +1207,13 @@ fn convert_assistant_blocks(
                     .and_then(Value::as_str)
                     .expect("validated text"),
             ),
-            Some("thinking" | "redacted_thinking") => *stripped_thinking = true,
+            Some("thinking") => reasoning.push_str(
+                block
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .expect("validated thinking"),
+            ),
+            Some("redacted_thinking") => saw_redacted_thinking = true,
             Some("tool_use") => {
                 let original = block.get("id").and_then(Value::as_str).unwrap_or("");
                 let id = unique_tool_id(original, ids);
@@ -1075,6 +1258,16 @@ fn convert_assistant_blocks(
     ]);
     if !tool_calls.is_empty() {
         message.insert("tool_calls".into(), Value::Array(tool_calls));
+        if preserve_reasoning && !reasoning.is_empty() {
+            message.insert("reasoning_content".into(), Value::String(reasoning));
+        } else if !reasoning.is_empty() {
+            *stripped_thinking = true;
+        }
+    } else if !reasoning.is_empty() {
+        *stripped_thinking = true;
+    }
+    if saw_redacted_thinking {
+        *stripped_thinking = true;
     }
     Ok(Value::Object(message))
 }
@@ -1109,17 +1302,12 @@ fn unique_tool_id(original: &str, ids: &mut IdContext) -> String {
     repaired
 }
 
-fn resolve_tool_result_id(original: &str, ids: &mut IdContext) -> String {
-    let Some(mappings) = ids.mappings.get(original) else {
-        return original.to_owned();
-    };
+fn resolve_tool_result_id(original: &str, ids: &mut IdContext) -> Option<String> {
+    let mappings = ids.mappings.get(original)?;
     let index = ids.result_index.entry(original.to_owned()).or_default();
-    let resolved = mappings
-        .get(*index)
-        .cloned()
-        .unwrap_or_else(|| original.to_owned());
+    let resolved = mappings.get(*index).cloned()?;
     *index += 1;
-    resolved
+    Some(resolved)
 }
 
 fn convert_tool_choice(choice: &Value) -> Result<Value, AppError> {
@@ -1195,8 +1383,8 @@ fn convert_tools(tools: &[Value]) -> Result<Value, AppError> {
         if let Some(description) = tool.get("description") {
             function.insert("description".into(), description.clone());
         }
-        if let Some(strict) = tool.get("strict") {
-            function.insert("strict".into(), strict.clone());
+        if tool.get("strict").and_then(Value::as_bool) == Some(true) {
+            function.insert("strict".into(), Value::Bool(true));
         }
         converted.push(json!({"type": "function", "function": function}));
     }
@@ -1252,13 +1440,13 @@ fn apply_model_options(
         }
         return Ok(());
     }
-    if let Some(effort) = effort {
+    if is_openai_reasoning(model)
+        && let Some(effort) = effort
+    {
         output.insert(
             "reasoning_effort".into(),
             Value::String(if effort == "max" { "xhigh" } else { effort }.to_owned()),
         );
-    } else if thinking_type == Some("disabled") {
-        output.insert("reasoning_effort".into(), Value::String("none".into()));
     }
     Ok(())
 }
@@ -1529,6 +1717,15 @@ fn upstream_protocol_error(message: impl Into<String>) -> AppError {
 fn normalized(model: &str) -> String {
     model.trim().to_lowercase()
 }
+fn is_openai_reasoning(model: &str) -> bool {
+    let model = normalized(model);
+    model.starts_with("gpt-5")
+        || (model.starts_with('o') && model.as_bytes().get(1).is_some_and(u8::is_ascii_digit))
+}
+fn does_not_support_stop(model: &str) -> bool {
+    let model = normalized(model);
+    model == "o3" || model.starts_with("o3-") || model == "o4-mini" || model.starts_with("o4-mini-")
+}
 fn is_glm5(model: &str) -> bool {
     normalized(model).starts_with("glm-5")
 }
@@ -1537,6 +1734,14 @@ fn is_glm52(model: &str) -> bool {
 }
 fn is_qwen3(model: &str) -> bool {
     normalized(model).starts_with("qwen3")
+}
+fn is_azure(base_url: &str) -> bool {
+    Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_lowercase))
+        .is_some_and(|host| {
+            host.ends_with(".openai.azure.com") || host.contains(".services.ai.azure.com")
+        })
 }
 
 #[cfg(test)]
@@ -1588,12 +1793,21 @@ mod tests {
     fn validates_mid_conversation_system_message_placement() {
         let valid = json!({
             "model": "gpt-5.2", "max_tokens": 10,
+            "system": "base",
             "messages": [
                 {"role": "user", "content": "hello"},
-                {"role": "system", "content": "be concise"}
+                {"role": "system", "content": "be concise"},
+                {"role": "system", "content": [{"type": "text", "text": "use JSON"}]}
             ]
         });
         validate_request(&valid).unwrap();
+        let converted = convert_request(&valid, "https://api.openai.com/v1").unwrap();
+        assert_eq!(converted["messages"][0]["role"], "system");
+        assert_eq!(
+            converted["messages"][0]["content"],
+            "base\n\nbe concise\n\nuse JSON"
+        );
+        assert_eq!(converted["messages"][1]["role"], "user");
 
         for body in [
             json!({
@@ -1679,7 +1893,7 @@ mod tests {
         let converted = convert_request(&body, "https://api.openai.com/v1").unwrap();
         assert_eq!(converted["max_completion_tokens"], 1);
         assert_eq!(converted["reasoning_effort"], "high");
-        assert_eq!(converted["safety_identifier"], "user_1");
+        assert!(converted.get("safety_identifier").is_none());
         assert_eq!(converted["response_format"]["type"], "json_schema");
         assert_eq!(converted["response_format"]["json_schema"]["strict"], true);
         assert!(converted.get("cache_control").is_none());
@@ -1689,9 +1903,11 @@ mod tests {
             "messages": [{"role": "user", "content": "ok"}],
             "thinking": {"type": "disabled"}
         });
-        assert_eq!(
-            convert_request(&disabled, "https://api.openai.com/v1").unwrap()["reasoning_effort"],
-            "none"
+        assert!(
+            convert_request(&disabled, "https://api.openai.com/v1")
+                .unwrap()
+                .get("reasoning_effort")
+                .is_none()
         );
 
         let qwen = json!({
@@ -1706,6 +1922,189 @@ mod tests {
                 .get("reasoning_effort")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn emits_only_compatible_optional_fields() {
+        let generic = json!({
+            "model": "gpt-4", "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ok"}],
+            "metadata": {"user_id": "user_1"},
+            "stop_sequences": [],
+            "output_config": {"effort": "high"},
+            "tools": [{
+                "name": "lookup", "input_schema": {"type": "object"}, "strict": false
+            }]
+        });
+        let converted = convert_request(&generic, "https://example.com/v1").unwrap();
+        assert_eq!(converted["max_tokens"], 1);
+        for field in [
+            "max_completion_tokens",
+            "safety_identifier",
+            "stop",
+            "reasoning_effort",
+            "tool_choice",
+        ] {
+            assert!(converted.get(field).is_none(), "unexpected field {field}");
+        }
+        assert!(converted["tools"][0]["function"].get("strict").is_none());
+
+        let azure = convert_request(
+            &json!({
+                "model": "gpt-4", "max_tokens": 1,
+                "messages": [{"role": "user", "content": "ok"}]
+            }),
+            "https://example.openai.azure.com/openai/deployments/test",
+        )
+        .unwrap();
+        assert_eq!(azure["max_tokens"], 32);
+
+        let unsupported_stop = json!({
+            "model": "o4-mini", "max_tokens": 10,
+            "messages": [{"role": "user", "content": "ok"}],
+            "stop_sequences": ["done"]
+        });
+        assert!(
+            convert_request(&unsupported_stop, "https://api.openai.com/v1")
+                .unwrap_err()
+                .message
+                .contains("does not support")
+        );
+    }
+
+    #[test]
+    fn validates_tool_names_and_choices() {
+        for body in [
+            json!({
+                "model": "gpt-4", "max_tokens": 10,
+                "messages": [{"role": "user", "content": "ok"}],
+                "tools": [
+                    {"name": "same", "input_schema": {}},
+                    {"name": "same", "input_schema": {}}
+                ]
+            }),
+            json!({
+                "model": "gpt-4", "max_tokens": 10,
+                "messages": [{"role": "user", "content": "ok"}],
+                "tools": [{"name": "invalid name", "input_schema": {}}]
+            }),
+            json!({
+                "model": "gpt-4", "max_tokens": 10,
+                "messages": [
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "id": "toolu_1", "name": "invalid name", "input": {}}
+                    ]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "done"}
+                    ]}
+                ]
+            }),
+            json!({
+                "model": "gpt-4", "max_tokens": 10,
+                "messages": [{"role": "user", "content": "ok"}],
+                "tools": [{"name": "lookup", "input_schema": {}}],
+                "tool_choice": {"type": "tool", "name": "missing"}
+            }),
+            json!({
+                "model": "gpt-4", "max_tokens": 10,
+                "messages": [{"role": "user", "content": "ok"}],
+                "tool_choice": {"type": "any"}
+            }),
+        ] {
+            assert!(validate_request(&body).is_err(), "body should fail: {body}");
+        }
+    }
+
+    #[test]
+    fn preserves_reasoning_only_for_glm_and_qwen_tool_history() {
+        for model in ["glm-5.2", "qwen3-coder"] {
+            let body = json!({
+                "model": model, "max_tokens": 10,
+                "messages": [
+                    {"role": "assistant", "content": [
+                        {"type": "thinking", "thinking": "private", "signature": "sig"},
+                        {"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}}
+                    ]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "done"}
+                    ]}
+                ]
+            });
+            let converted = convert_request(&body, "https://example.com/v1").unwrap();
+            assert_eq!(converted["messages"][0]["reasoning_content"], "private");
+        }
+
+        let generic = json!({
+            "model": "gpt-4", "max_tokens": 10,
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "private", "signature": "sig"},
+                    {"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "done"}
+                ]}
+            ]
+        });
+        let converted = convert_request(&generic, "https://example.com/v1").unwrap();
+        assert!(converted["messages"][0].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn validates_tool_results_and_keeps_images_before_user_text() {
+        for body in [
+            json!({
+                "model": "gpt-4", "max_tokens": 10,
+                "messages": [{"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "missing", "content": "done"}
+                ]}]
+            }),
+            json!({
+                "model": "gpt-4", "max_tokens": 10,
+                "messages": [
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}}
+                    ]},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "before"},
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "done"}
+                    ]}
+                ]
+            }),
+            json!({
+                "model": "gpt-4", "max_tokens": 10,
+                "messages": [
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "name": "lookup", "input": {}}
+                    ]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "done"}
+                    ]}
+                ]
+            }),
+        ] {
+            assert!(validate_request(&body).is_err(), "body should fail: {body}");
+        }
+
+        let valid = json!({
+            "model": "gpt-4o", "max_tokens": 10,
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "shot", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                        {"type": "image", "source": {"type": "url", "url": "https://example.com/a.png"}}
+                    ]},
+                    {"type": "text", "text": "continue"}
+                ]}
+            ]
+        });
+        let converted = convert_request(&valid, "https://example.com/v1").unwrap();
+        assert_eq!(converted["messages"][1]["role"], "tool");
+        assert_eq!(converted["messages"][2]["content"][0]["type"], "text");
+        assert_eq!(converted["messages"][2]["content"][1]["type"], "image_url");
+        assert_eq!(converted["messages"][3]["content"], "continue");
     }
 
     #[test]
@@ -1745,7 +2144,6 @@ mod tests {
                 }]}]
             }),
         ] {
-            validate_request(&body).unwrap();
             assert!(convert_request(&body, "https://api.openai.com/v1").is_err());
         }
     }

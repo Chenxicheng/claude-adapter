@@ -136,12 +136,12 @@ Version 2 is a CLI-only product. The previous JavaScript `createServer` and conv
 | Feature Capability    | Support Status | Implementation Notes                                     |
 | --------------------- | :------------: | -------------------------------------------------------- |
 | Text Generation       |       ✅       | Full fidelity                                            |
-| System Prompts        |       ✅       | Top-level and valid mid-conversation system messages     |
+| System Prompts        |       ✅       | Mid-conversation instructions normalize to one system    |
 | Real-time Streaming   |       ✅       | SSE event translation                                    |
 | Tool/Function Calling |       ✅       | Bidirectional mapping                                    |
 | Native Tool Support   |       ✅       | Upstream model must support native tool/function calling |
 | Context Preservation  |       ✅       | Multi-turn history support                               |
-| Token Limits          |       ✅       | `max_tokens` maps exactly to `max_completion_tokens`     |
+| Token Limits          |       ✅       | Field selected by target model family                    |
 | Sampling (Temp/Top P) |       ✅       | Parameter pass-through                                   |
 | Stop Sequences        |       ✅       | Mapped to API equivalent                                 |
 | Multimodal (Vision)   |       ✅       | Base64/URL input; upstream model must support vision     |

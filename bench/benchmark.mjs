@@ -152,6 +152,36 @@ async function runRequests(url, total, concurrency, streaming) {
 }
 
 async function verifyProtocolScenarios(url, mock) {
+  const firstChatResponse = await fetch(`${url}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: 'benchmark-model',
+      max_tokens: 128,
+      system: 'Base instruction.',
+      messages: [
+        { role: 'user', content: 'Reply with benchmark.' },
+        { role: 'system', content: 'Be concise.' },
+      ],
+      metadata: { user_id: 'benchmark-user' },
+      output_config: { effort: 'high' },
+    }),
+  });
+  if (!firstChatResponse.ok) throw new Error('First-chat compatibility preflight failed');
+  await firstChatResponse.json();
+  const firstChat = mock.requests.at(-1);
+  if (
+    firstChat.messages[0]?.role !== 'system' ||
+    firstChat.messages[0]?.content !== 'Base instruction.\n\nBe concise.' ||
+    firstChat.messages.some((message, index) => index > 0 && message.role === 'system') ||
+    firstChat.max_tokens !== 128 ||
+    'max_completion_tokens' in firstChat ||
+    'safety_identifier' in firstChat ||
+    'reasoning_effort' in firstChat
+  ) {
+    throw new Error('First-chat request conversion preflight failed');
+  }
+
   const toolResponse = await fetch(`${url}/v1/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
