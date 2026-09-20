@@ -189,16 +189,30 @@ async function verifyProtocolScenarios(url, mock) {
       model: 'benchmark-model',
       max_tokens: 128,
       messages: [{ role: 'user', content: '__reasoning_tool__' }],
-      tools: [{ name: 'lookup', description: 'Lookup', input_schema: { type: 'object' } }],
-      output_config: { effort: 'high' },
+      tools: [
+        { name: 'lookup', description: 'Lookup', input_schema: { type: 'object' }, strict: true },
+      ],
+      tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+      output_config: {
+        effort: 'high',
+        format: { type: 'json_schema', schema: { type: 'object' } },
+      },
     }),
   });
   const toolBody = await toolResponse.json();
   if (!toolResponse.ok || toolBody.content.map((part) => part.type).join(',') !== 'tool_use') {
     throw new Error('Reasoning/tool parity preflight failed');
   }
-  if (!mock.requests.at(-1).tools?.length)
+  const toolRequest = mock.requests.at(-1);
+  if (!toolRequest.tools?.length)
     throw new Error('Tool request conversion preflight failed');
+  if (
+    'strict' in toolRequest.tools[0].function ||
+    'parallel_tool_calls' in toolRequest ||
+    'response_format' in toolRequest
+  ) {
+    throw new Error('TypeScript-compatible tool request shape preflight failed');
+  }
 
   const errorResponse = await fetch(`${url}/v1/messages`, {
     method: 'POST',

@@ -66,6 +66,7 @@
     "message_delta",
     "message_stop"
   ],
+  "toolChunkEventCounts": [1, 2],
   "eventTypes": [
     "message_start",
     "content_block_start",

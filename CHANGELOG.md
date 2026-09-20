@@ -8,6 +8,10 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ## [Unreleased]
 
+### Fixed
+
+- **Third-party compatibility**: Restored the TypeScript core request wire shape, added sanitized request-shape diagnostics for upstream rejections, and streams tool arguments once fragmented names are stable.
+
 ---
 
 ## [2.0.1] — 2026-09-20

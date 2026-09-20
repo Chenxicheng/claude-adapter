@@ -41,7 +41,7 @@ pub fn transform_stream(
                                     }
                                 }
                                 Err(message) => {
-                                    storage.record_error(502, state.error_record(&message));
+                                    storage.record_error(state.error_record(&message));
                                     yield Ok(encode_event(error_event(&message)));
                                     failed = true;
                                     break;
@@ -49,7 +49,7 @@ pub fn transform_stream(
                             }
                             Err(error) => {
                                 let message = format!("Invalid upstream SSE JSON: {error}");
-                                storage.record_error(502, state.error_record(&message));
+                                storage.record_error(state.error_record(&message));
                                 yield Ok(encode_event(error_event(&message)));
                                 failed = true;
                                 break;
@@ -59,7 +59,7 @@ pub fn transform_stream(
                 }
                 Err(error) => {
                     let message = format!("Upstream stream failed: {error}");
-                    storage.record_error(502, state.error_record(&message));
+                    storage.record_error(state.error_record(&message));
                     yield Ok(encode_event(error_event(&message)));
                     failed = true;
                 }
@@ -78,7 +78,7 @@ pub fn transform_stream(
                     }
                 }
                 Err(message) => {
-                    storage.record_error(502, state.error_record(&message));
+                    storage.record_error(state.error_record(&message));
                     yield Ok(encode_event(error_event(&message)));
                 }
             }
@@ -145,6 +145,8 @@ struct ToolCall {
     id: String,
     name: String,
     arguments: String,
+    emitted_arguments: usize,
+    block_index: Option<usize>,
 }
 
 struct StreamState {
@@ -155,9 +157,9 @@ struct StreamState {
     provider: String,
     content_index: usize,
     tools: BTreeMap<usize, ToolCall>,
+    active_tool: Option<usize>,
     started: bool,
     text_open: bool,
-    tools_closed: bool,
     reasoning_seen: bool,
     visible_content_seen: bool,
     refusal_text: String,
@@ -167,6 +169,7 @@ struct StreamState {
     output_tokens: Option<u64>,
     thinking_tokens: Option<u64>,
     upstream_usage: Option<Value>,
+    error_details: Option<Value>,
 }
 
 impl StreamState {
@@ -179,9 +182,9 @@ impl StreamState {
             provider,
             content_index: 0,
             tools: BTreeMap::new(),
+            active_tool: None,
             started: false,
             text_open: false,
-            tools_closed: false,
             reasoning_seen: false,
             visible_content_seen: false,
             refusal_text: String::new(),
@@ -191,11 +194,21 @@ impl StreamState {
             output_tokens: None,
             thinking_tokens: None,
             upstream_usage: None,
+            error_details: None,
         }
     }
 
     fn process_chunk(&mut self, chunk: &Value) -> Result<Vec<Value>, String> {
         let mut events = Vec::new();
+        if let Some(error) = chunk.get("error") {
+            self.error_details = Some(error.clone());
+            return Err(error
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| error.as_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| error.to_string()));
+        }
         if let Some(usage) = chunk.get("usage")
             && !usage.is_null()
         {
@@ -354,6 +367,16 @@ impl StreamState {
                     })?
                     .to_owned(),
             );
+            if self.finish_reason.as_deref() == Some("tool_calls")
+                && self.active_tool.is_none()
+                && let Some(index) = self
+                    .tools
+                    .iter()
+                    .find(|(_, tool)| tool.block_index.is_none() && !tool.name.is_empty())
+                    .map(|(index, _)| *index)
+            {
+                self.emit_tool_delta(index, &mut events)?;
+            }
         }
         Ok(events)
     }
@@ -387,6 +410,9 @@ impl StreamState {
         }
         let function = delta.get("function").and_then(Value::as_object);
         if !self.tools.contains_key(&index) {
+            if index != self.tools.len() {
+                return Err("Upstream tool delta indices must be contiguous and ordered".to_owned());
+            }
             self.close_text(events);
             let id = delta
                 .get("id")
@@ -400,6 +426,8 @@ impl StreamState {
                     id: id.clone(),
                     name: String::new(),
                     arguments: String::new(),
+                    emitted_arguments: 0,
+                    block_index: None,
                 },
             );
         }
@@ -409,17 +437,31 @@ impl StreamState {
         {
             return Err("Upstream tool delta function.arguments must be a string".to_owned());
         }
-        if let Some(name) = function
+        if let Some(name) = function.and_then(|function| function.get("name"))
+            && !name.is_null()
+            && !name.is_string()
+        {
+            return Err("Upstream tool delta function.name must be a string".to_owned());
+        }
+        let name_fragment = function
             .and_then(|function| function.get("name"))
             .and_then(Value::as_str)
-            && !name.is_empty()
-        {
-            self.tools
-                .get_mut(&index)
+            .unwrap_or("");
+        if !name_fragment.is_empty()
+            && self
+                .tools
+                .get(&index)
                 .expect("inserted tool")
-                .name
-                .push_str(name);
+                .block_index
+                .is_some()
+        {
+            return Err("Upstream tool function.name changed after streaming started".to_owned());
         }
+        self.tools
+            .get_mut(&index)
+            .expect("inserted tool")
+            .name
+            .push_str(name_fragment);
         if let Some(arguments) = function
             .and_then(|function| function.get("arguments"))
             .and_then(Value::as_str)
@@ -428,12 +470,59 @@ impl StreamState {
             let tool = self.tools.get_mut(&index).expect("inserted tool");
             tool.arguments.push_str(arguments);
         }
+        let tool = self.tools.get(&index).expect("inserted tool");
+        let next_pending = self
+            .tools
+            .iter()
+            .find(|(_, tool)| tool.block_index.is_none())
+            .map(|(index, _)| *index);
+        if self.active_tool == Some(index)
+            || (self.active_tool.is_none()
+                && next_pending == Some(index)
+                && tool.block_index.is_none()
+                && !tool.name.is_empty()
+                && name_fragment.is_empty())
+        {
+            self.emit_tool_delta(index, events)?;
+        }
         self.visible_content_seen = true;
         Ok(())
     }
 
+    fn emit_tool_delta(
+        &mut self,
+        tool_index: usize,
+        events: &mut Vec<Value>,
+    ) -> Result<(), String> {
+        let tool = self.tools.get_mut(&tool_index).expect("known tool");
+        if tool.block_index.is_none() {
+            if tool.name.is_empty() {
+                return Err("Upstream tool call is missing function.name".to_owned());
+            }
+            let block_index = self.content_index;
+            self.content_index += 1;
+            tool.block_index = Some(block_index);
+            self.active_tool = Some(tool_index);
+            events.push(json!({
+                "type": "content_block_start",
+                "index": block_index,
+                "content_block": {"type": "tool_use", "id": tool.id, "name": tool.name, "input": {}}
+            }));
+        }
+        if tool.emitted_arguments < tool.arguments.len() {
+            let partial_json = tool.arguments[tool.emitted_arguments..].to_owned();
+            tool.emitted_arguments = tool.arguments.len();
+            events.push(json!({
+                "type": "content_block_delta",
+                "index": tool.block_index.expect("started tool"),
+                "delta": {"type": "input_json_delta", "partial_json": partial_json}
+            }));
+        }
+        Ok(())
+    }
+
     fn push_text(&mut self, text: &str, events: &mut Vec<Value>) {
-        if !self.tools.is_empty() && !self.tools_closed {
+        if !self.tools.is_empty() {
             self.deferred_text.push_str(text);
             self.visible_content_seen = true;
             return;
@@ -459,29 +548,6 @@ impl StreamState {
             events.push(json!({"type": "content_block_stop", "index": self.content_index}));
             self.text_open = false;
             self.content_index += 1;
-        }
-    }
-
-    fn emit_tools(&mut self, events: &mut Vec<Value>) {
-        if !self.tools_closed {
-            for tool in self.tools.values() {
-                let index = self.content_index;
-                self.content_index += 1;
-                events.push(json!({
-                    "type": "content_block_start",
-                    "index": index,
-                    "content_block": {"type": "tool_use", "id": tool.id, "name": tool.name, "input": {}}
-                }));
-                if !tool.arguments.is_empty() {
-                    events.push(json!({
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": {"type": "input_json_delta", "partial_json": tool.arguments}
-                    }));
-                }
-                events.push(json!({"type": "content_block_stop", "index": index}));
-            }
-            self.tools_closed = true;
         }
     }
 
@@ -520,7 +586,26 @@ impl StreamState {
             );
         }
         self.close_text(&mut events);
-        self.emit_tools(&mut events);
+        let tool_indices = self.tools.keys().copied().collect::<Vec<_>>();
+        if let Some(index) = self.active_tool {
+            self.emit_tool_delta(index, &mut events)?;
+            events.push(json!({
+                "type": "content_block_stop",
+                "index": self.tools[&index].block_index.expect("started tool")
+            }));
+            self.active_tool = None;
+        }
+        for index in tool_indices {
+            if self.tools[&index].block_index.is_some() {
+                continue;
+            }
+            self.emit_tool_delta(index, &mut events)?;
+            events.push(json!({
+                "type": "content_block_stop",
+                "index": self.tools[&index].block_index.expect("started tool")
+            }));
+            self.active_tool = None;
+        }
         if !self.deferred_text.is_empty() {
             let text = std::mem::take(&mut self.deferred_text);
             self.push_text(&text, &mut events);
@@ -569,13 +654,17 @@ impl StreamState {
     }
 
     fn error_record(&self, message: &str) -> Value {
+        let mut error = json!({"message": message});
+        if let Some(details) = &self.error_details {
+            error["response"] = json!({"error": details});
+        }
         json!({
             "timestamp": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             "requestId": self.request_id,
             "provider": self.provider,
             "modelName": self.model,
             "streaming": true,
-            "error": {"message": message}
+            "error": error
         })
     }
 }
@@ -651,12 +740,22 @@ mod tests {
         assert_eq!(final_usage, &fixture["finalUsage"]);
 
         let mut tools = StreamState::new("model".into(), "provider".into(), "request".into());
-        let mut tool_events = fixture["toolChunks"]
+        let tool_chunks = fixture["toolChunks"]
             .as_array()
             .unwrap()
             .iter()
-            .flat_map(|chunk| tools.process_chunk(chunk).unwrap())
+            .map(|chunk| tools.process_chunk(chunk).unwrap())
             .collect::<Vec<_>>();
+        assert_eq!(
+            tool_chunks.iter().map(Vec::len).collect::<Vec<_>>(),
+            fixture["toolChunkEventCounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|count| count.as_u64().unwrap() as usize)
+                .collect::<Vec<_>>()
+        );
+        let mut tool_events = tool_chunks.into_iter().flatten().collect::<Vec<_>>();
         tool_events.extend(tools.finish().unwrap());
         let tool_event_types = tool_events
             .iter()
@@ -688,24 +787,34 @@ mod tests {
                 "choices": [{"delta": {"tool_calls": [
                     {"index": 0, "function": {"arguments": "1}"}},
                     {"index": 1, "function": {"arguments": "2}"}}
-                ]}, "finish_reason": "tool_calls"}],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
+                ]}, "finish_reason": null}]
             }))
             .unwrap();
-        assert!(finished.is_empty());
+        assert_eq!(finished[0]["content_block"]["id"], "toolu_1");
+        assert_eq!(finished[1]["delta"]["partial_json"], "{\"a\":1}");
+        assert_eq!(finished.len(), 2);
+        assert!(
+            state
+                .process_chunk(&json!({
+                    "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
+                }))
+                .unwrap()
+                .is_empty()
+        );
         let final_events = state.finish().unwrap();
-        assert_eq!(final_events[0]["content_block"]["id"], "toolu_1");
         assert_eq!(
-            final_events[2],
+            final_events[0],
             json!({"type": "content_block_stop", "index": 0})
         );
-        assert_eq!(final_events[3]["content_block"]["id"], "toolu_2");
+        assert_eq!(final_events[1]["content_block"]["id"], "toolu_2");
+        assert_eq!(final_events[2]["delta"]["partial_json"], "{\"b\":2}");
         assert_eq!(
-            final_events[5],
+            final_events[3],
             json!({"type": "content_block_stop", "index": 1})
         );
-        assert_eq!(final_events[6]["delta"]["stop_reason"], "tool_use");
-        assert_eq!(final_events[6]["usage"]["input_tokens"], 10);
+        assert_eq!(final_events[4]["delta"]["stop_reason"], "tool_use");
+        assert_eq!(final_events[4]["usage"]["input_tokens"], 10);
         assert_eq!(state.usage_record()["usage"]["total_tokens"], 14);
     }
 
@@ -872,10 +981,13 @@ mod tests {
                 }]}, "finish_reason": "tool_calls"}]
             }))
             .unwrap();
-        assert!(named.is_empty());
+        assert_eq!(named[0]["content_block"]["name"], "lookup");
+        assert_eq!(named[1]["delta"]["partial_json"], "{\"value\":1}");
         let finished = state.finish().unwrap();
-        assert_eq!(finished[0]["content_block"]["name"], "lookup");
-        assert_eq!(finished[1]["delta"]["partial_json"], "{\"value\":1}");
+        assert_eq!(
+            finished[0],
+            json!({"type": "content_block_stop", "index": 0})
+        );
     }
 
     #[test]
@@ -910,6 +1022,7 @@ mod tests {
             json!({"choices": [{"delta": {}, "finish_reason": 1}]}),
             json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "type": "custom"}]}, "finish_reason": null}]}),
             json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": 1}]}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 1, "id": "toolu_2"}]}, "finish_reason": null}]}),
         ] {
             let mut state = StreamState::new("model".into(), "provider".into(), "request".into());
             assert!(
@@ -917,5 +1030,20 @@ mod tests {
                 "chunk should fail: {chunk}"
             );
         }
+    }
+
+    #[test]
+    fn preserves_upstream_stream_error_payload() {
+        let mut state = StreamState::new("model".into(), "provider".into(), "request".into());
+        let error = state
+            .process_chunk(&json!({
+                "error": {"message": "Not Acceptable", "code": "unsupported_field"}
+            }))
+            .unwrap_err();
+        assert_eq!(error, "Not Acceptable");
+        assert_eq!(
+            state.error_record(&error)["error"]["response"]["error"],
+            json!({"message": "Not Acceptable", "code": "unsupported_field"})
+        );
     }
 }

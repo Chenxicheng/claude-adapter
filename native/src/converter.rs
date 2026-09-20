@@ -71,7 +71,7 @@ pub fn validate_request(body: &Value) -> Result<(), AppError> {
     validate_stop_sequences(object.get("stop_sequences"), &mut errors);
     validate_cache_control(object.get("cache_control"), "cache_control", &mut errors);
     validate_metadata(object.get("metadata"), &mut errors);
-    validate_output_config(object.get("output_config"), object, &mut errors);
+    validate_output_config(object.get("output_config"), &mut errors);
     validate_thinking(
         object.get("thinking"),
         object.get("model").and_then(Value::as_str),
@@ -442,11 +442,7 @@ fn validate_metadata(value: Option<&Value>, errors: &mut Vec<String>) {
     }
 }
 
-fn validate_output_config(
-    value: Option<&Value>,
-    request: &Map<String, Value>,
-    errors: &mut Vec<String>,
-) {
+fn validate_output_config(value: Option<&Value>, errors: &mut Vec<String>) {
     let Some(value) = value else {
         return;
     };
@@ -477,19 +473,6 @@ fn validate_output_config(
             .is_none_or(|schema| !schema.is_object())
         {
             errors.push("output_config.format.schema: schema must be an object".to_owned());
-        }
-        if request
-            .get("messages")
-            .and_then(Value::as_array)
-            .and_then(|messages| messages.last())
-            .and_then(|message| message.get("role"))
-            .and_then(Value::as_str)
-            == Some("assistant")
-        {
-            errors.push(
-                "output_config.format: structured outputs cannot be used with assistant prefilling"
-                    .to_owned(),
-            );
         }
     }
 }
@@ -850,6 +833,39 @@ pub fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> 
     if stripped_thinking {
         eprintln!("[adapter] Stripped unsupported Anthropic thinking history from request");
     }
+    let mut omitted_fields = Vec::new();
+    if request
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool.get("strict").and_then(Value::as_bool) == Some(true))
+        })
+    {
+        omitted_fields.push("tools[].strict");
+    }
+    if request
+        .get("tool_choice")
+        .and_then(|choice| choice.get("disable_parallel_tool_use"))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        omitted_fields.push("tool_choice.disable_parallel_tool_use");
+    }
+    if request
+        .get("output_config")
+        .and_then(|config| config.get("format"))
+        .is_some_and(|format| !format.is_null())
+    {
+        omitted_fields.push("output_config.format");
+    }
+    if !omitted_fields.is_empty() {
+        eprintln!(
+            "[adapter] Validated but omitted compatibility fields: {}",
+            omitted_fields.join(", ")
+        );
+    }
     let mut output = Map::new();
     output.insert("model".into(), Value::String(model.to_owned()));
     output.insert("messages".into(), Value::Array(messages));
@@ -895,31 +911,7 @@ pub fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> 
         let choice_type = choice.get("type").and_then(Value::as_str);
         if tools.is_some() || !matches!(choice_type, Some("none" | "auto")) {
             output.insert("tool_choice".into(), convert_tool_choice(choice)?);
-            if choice
-                .get("disable_parallel_tool_use")
-                .and_then(Value::as_bool)
-                == Some(true)
-            {
-                output.insert("parallel_tool_calls".into(), Value::Bool(false));
-            }
         }
-    }
-    if let Some(format) = request
-        .get("output_config")
-        .and_then(|config| config.get("format"))
-        && !format.is_null()
-    {
-        output.insert(
-            "response_format".into(),
-            json!({
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "anthropic_output",
-                    "schema": format["schema"].clone(),
-                    "strict": true
-                }
-            }),
-        );
     }
     apply_model_options(request, &mut output, model)?;
     Ok(Value::Object(output))
@@ -1382,9 +1374,6 @@ fn convert_tools(tools: &[Value]) -> Result<Value, AppError> {
         ]);
         if let Some(description) = tool.get("description") {
             function.insert("description".into(), description.clone());
-        }
-        if tool.get("strict").and_then(Value::as_bool) == Some(true) {
-            function.insert("strict".into(), Value::Bool(true));
         }
         converted.push(json!({"type": "function", "function": function}));
     }
@@ -1858,9 +1847,9 @@ mod tests {
         validate_request(&body).unwrap();
         let converted = convert_request(&body, "https://api.openai.com/v1").unwrap();
         assert_eq!(converted["messages"][0]["content"], "{");
-        assert_eq!(converted["tools"][0]["function"]["strict"], true);
+        assert!(converted["tools"][0]["function"].get("strict").is_none());
         assert_eq!(converted["tool_choice"]["function"]["name"], "lookup");
-        assert_eq!(converted["parallel_tool_calls"], false);
+        assert!(converted.get("parallel_tool_calls").is_none());
     }
 
     #[test]
@@ -1894,8 +1883,7 @@ mod tests {
         assert_eq!(converted["max_completion_tokens"], 1);
         assert_eq!(converted["reasoning_effort"], "high");
         assert!(converted.get("safety_identifier").is_none());
-        assert_eq!(converted["response_format"]["type"], "json_schema");
-        assert_eq!(converted["response_format"]["json_schema"]["strict"], true);
+        assert!(converted.get("response_format").is_none());
         assert!(converted.get("cache_control").is_none());
 
         let disabled = json!({
@@ -2108,7 +2096,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_structured_output_with_assistant_prefill() {
+    fn validates_but_omits_structured_output_with_assistant_prefill() {
         let body = json!({
             "model": "gpt-5", "max_tokens": 10,
             "messages": [{"role": "assistant", "content": "{"}],
@@ -2116,7 +2104,9 @@ mod tests {
                 "format": {"type": "json_schema", "schema": {"type": "object"}}
             }
         });
-        assert!(validate_request(&body).is_err());
+        let converted = convert_request(&body, "https://api.openai.com/v1").unwrap();
+        assert_eq!(converted["messages"][0]["content"], "{");
+        assert!(converted.get("response_format").is_none());
     }
 
     #[test]

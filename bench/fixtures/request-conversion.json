@@ -172,8 +172,7 @@
           "function": { "name": "lookup", "parameters": { "type": "object" } }
         }
       ],
-      "tool_choice": "required",
-      "parallel_tool_calls": false
+      "tool_choice": "required"
     }
   },
   {
@@ -204,12 +203,50 @@
           "function": {
             "name": "lookup",
             "description": "Lookup a value",
-            "parameters": { "type": "object" },
-            "strict": true
+            "parameters": { "type": "object" }
           }
         }
       ],
       "tool_choice": { "type": "function", "function": { "name": "lookup" } }
+    }
+  },
+  {
+    "name": "glm first chat uses TS-compatible core fields",
+    "input": {
+      "model": "glm-5.2",
+      "max_tokens": 128,
+      "stream": true,
+      "thinking": { "type": "adaptive" },
+      "output_config": {
+        "effort": "high",
+        "format": { "type": "json_schema", "schema": { "type": "object" } }
+      },
+      "messages": [{ "role": "user", "content": "Hello" }],
+      "tools": [
+        {
+          "name": "lookup",
+          "input_schema": { "type": "object" },
+          "strict": true
+        }
+      ],
+      "tool_choice": { "type": "auto", "disable_parallel_tool_use": true }
+    },
+    "expected": {
+      "model": "glm-5.2",
+      "messages": [{ "role": "user", "content": "Hello" }],
+      "stream": true,
+      "max_tokens": 128,
+      "stream_options": { "include_usage": true },
+      "tools": [
+        {
+          "type": "function",
+          "function": { "name": "lookup", "parameters": { "type": "object" } }
+        }
+      ],
+      "tool_choice": "auto",
+      "thinking": { "type": "enabled" },
+      "tool_stream": true,
+      "reasoning_effort": "high"
     }
   }
 ]

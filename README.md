@@ -41,6 +41,8 @@ This adapter effectively "tricks" Claude Code into communicating with models it 
 
 The adapter operates as a native Rust HTTP server that mimics the Anthropic API structure while forwarding requests to an upstream OpenAI-compatible target. One self-contained npm tarball includes the Linux x64 and Windows x64 binaries plus all production JavaScript dependencies, so it can be transferred and installed offline without Rust or registry access.
 
+For broad third-party compatibility, the native converter preserves the established TypeScript core request shape and omits optional fields that strict providers commonly reject after validating them. When an upstream request is rejected, local error JSONL includes a sanitized field-level request shape for diagnosis without recording prompts, tool inputs, schemas, images, headers, or credentials.
+
 ```
 ┌─────────────┐      ┌─────────────────┐      ┌─────────────────┐
 │              ────▶                   ────▶                   │

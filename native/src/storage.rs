@@ -49,10 +49,7 @@ impl Storage {
         self.enqueue(RecordKind::Usage, record);
     }
 
-    pub fn record_error(&self, status: u16, record: Value) {
-        if matches!(status, 401 | 402 | 404 | 429) {
-            return;
-        }
+    pub fn record_error(&self, record: Value) {
         self.enqueue(RecordKind::Error, record);
     }
 
@@ -207,7 +204,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let (storage, handle) = Storage::start(directory.path().to_path_buf());
         storage.record_usage(json!({"value": 1}));
-        storage.record_error(500, json!({"message": "failed"}));
+        storage.record_error(json!({"message": "failed"}));
         drop(storage);
         handle.await.unwrap();
 

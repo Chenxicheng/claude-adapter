@@ -5,6 +5,7 @@ mod storage;
 mod stream;
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     env,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -173,7 +174,7 @@ async fn handle_messages(
         .await
         .map_err(|error| AppError::new(StatusCode::BAD_GATEWAY, error.to_string()))?;
     if !response.status().is_success() {
-        return Err(upstream_error(response).await);
+        return Err(upstream_error(response, &openai).await);
     }
 
     if streaming {
@@ -223,13 +224,17 @@ async fn handle_messages(
     Ok(Json(converted).into_response())
 }
 
-async fn upstream_error(response: reqwest::Response) -> AppError {
+async fn upstream_error(response: reqwest::Response, request: &Value) -> AppError {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let text = response
         .text()
         .await
         .unwrap_or_else(|error| format!("Failed to read upstream error: {error}"));
+    build_upstream_error(status, text, upstream_request_shape(request))
+}
+
+fn build_upstream_error(status: StatusCode, text: String, request_shape: Value) -> AppError {
     let details =
         serde_json::from_str::<Value>(&text).unwrap_or_else(|_| Value::String(text.clone()));
     let message = details
@@ -237,7 +242,98 @@ async fn upstream_error(response: reqwest::Response) -> AppError {
         .and_then(Value::as_str)
         .unwrap_or(&text)
         .to_owned();
-    AppError::new(status, message).with_details(details)
+    AppError::new(status, message).with_details(json!({
+        "response": details,
+        "upstreamRequestShape": request_shape,
+    }))
+}
+
+fn upstream_request_shape(request: &Value) -> Value {
+    let object = request.as_object();
+    let mut top_level_fields = object
+        .map(|object| object.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    top_level_fields.sort();
+
+    let mut message_roles = Vec::new();
+    let mut content_types = BTreeMap::<String, u64>::new();
+    if let Some(messages) = request.get("messages").and_then(Value::as_array) {
+        for message in messages {
+            message_roles.push(
+                message
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .unwrap_or("invalid")
+                    .to_owned(),
+            );
+            match message.get("content") {
+                Some(Value::String(_)) => *content_types.entry("string".into()).or_default() += 1,
+                Some(Value::Array(parts)) => {
+                    for part in parts {
+                        let kind = part
+                            .get("type")
+                            .and_then(Value::as_str)
+                            .unwrap_or("invalid");
+                        *content_types.entry(kind.to_owned()).or_default() += 1;
+                    }
+                }
+                Some(Value::Null) | None => *content_types.entry("null".into()).or_default() += 1,
+                Some(_) => *content_types.entry("invalid".into()).or_default() += 1,
+            }
+        }
+    }
+
+    let tools = request.get("tools").and_then(Value::as_array);
+    let tool_function_fields = tools
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool.get("function").and_then(Value::as_object))
+        .flat_map(|function| function.keys().cloned())
+        .collect::<BTreeSet<_>>();
+    let tool_choice_type = request.get("tool_choice").and_then(|choice| match choice {
+        Value::String(kind) => Some(kind.as_str()),
+        Value::Object(choice) => choice.get("type").and_then(Value::as_str),
+        _ => None,
+    });
+    let model_family = request
+        .get("model")
+        .and_then(Value::as_str)
+        .map(|model| model.to_ascii_lowercase())
+        .map(|model| {
+            if model.starts_with("glm-5") {
+                "glm-5"
+            } else if model.starts_with("qwen3") {
+                "qwen3"
+            } else if model.starts_with("gpt-5")
+                || model
+                    .strip_prefix('o')
+                    .and_then(|suffix| suffix.chars().next())
+                    .is_some_and(|character| character.is_ascii_digit())
+            {
+                "openai-reasoning"
+            } else {
+                "generic"
+            }
+        })
+        .unwrap_or("unknown");
+
+    json!({
+        "topLevelFields": top_level_fields,
+        "messageRoles": message_roles,
+        "messageContentTypes": content_types,
+        "maxTokenField": if request.get("max_completion_tokens").is_some() {
+            Some("max_completion_tokens")
+        } else if request.get("max_tokens").is_some() {
+            Some("max_tokens")
+        } else {
+            None
+        },
+        "toolCount": tools.map_or(0, Vec::len),
+        "toolFunctionFields": tool_function_fields,
+        "toolChoiceType": tool_choice_type,
+        "modelFamily": model_family,
+        "stream": request.get("stream").and_then(Value::as_bool),
+    })
 }
 
 fn record_error(
@@ -247,24 +343,47 @@ fn record_error(
     streaming: bool,
     error: &AppError,
 ) {
+    state.storage.record_error(error_record_value(
+        request_id,
+        &state.config.base_url,
+        model,
+        streaming,
+        error,
+    ));
+}
+
+fn error_record_value(
+    request_id: &str,
+    provider: &str,
+    model: &str,
+    streaming: bool,
+    error: &AppError,
+) -> Value {
     let mut details = json!({
         "message": error.message,
         "status": error.status.as_u16(),
     });
+    let mut request_shape = None;
     if let Some(response) = &error.details {
-        details["response"] = response.clone();
+        if let Some(shape) = response.get("upstreamRequestShape") {
+            request_shape = Some(shape.clone());
+            details["response"] = response["response"].clone();
+        } else {
+            details["response"] = response.clone();
+        }
     }
-    state.storage.record_error(
-        error.status.as_u16(),
-        json!({
-            "timestamp": now(),
-            "requestId": request_id,
-            "provider": state.config.base_url,
-            "modelName": model,
-            "streaming": streaming,
-            "error": details,
-        }),
-    );
+    let mut record = json!({
+        "timestamp": now(),
+        "requestId": request_id,
+        "provider": provider,
+        "modelName": model,
+        "streaming": streaming,
+        "error": details,
+    });
+    if let Some(shape) = request_shape {
+        record["upstreamRequestShape"] = shape;
+    }
+    record
 }
 
 fn now() -> String {
@@ -376,5 +495,78 @@ impl Arguments {
             config: config.ok_or("--config is required")?,
             port,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_upstream_error_keeps_status_and_sanitized_request_shape() {
+        let request = json!({
+            "model": "glm-5.2",
+            "messages": [
+                {"role": "system", "content": "secret system prompt"},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "secret prompt"},
+                    {"type": "image_url", "image_url": {"url": "https://secret.test/a.png"}}
+                ]}
+            ],
+            "max_tokens": 128,
+            "stream": true,
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "lookup_secret",
+                    "description": "secret description",
+                    "parameters": {"type": "object", "secret_schema": true}
+                }
+            }],
+            "tool_choice": "auto",
+            "thinking": {"type": "enabled"},
+            "tool_stream": true
+        });
+        let shape = upstream_request_shape(&request);
+        let serialized = shape.to_string();
+        for secret in [
+            "secret system prompt",
+            "secret prompt",
+            "https://secret.test/a.png",
+            "lookup_secret",
+            "secret description",
+            "secret_schema",
+        ] {
+            assert!(!serialized.contains(secret), "shape leaked {secret}");
+        }
+        assert_eq!(shape["modelFamily"], "glm-5");
+        assert_eq!(shape["toolCount"], 1);
+        assert_eq!(shape["toolChoiceType"], "auto");
+        assert_eq!(shape["messageContentTypes"]["image_url"], 1);
+        assert_eq!(
+            shape["toolFunctionFields"],
+            json!(["description", "name", "parameters"])
+        );
+
+        let error = build_upstream_error(
+            StatusCode::NOT_ACCEPTABLE,
+            "Not Acceptable".to_owned(),
+            shape.clone(),
+        );
+        assert_eq!(error.status, StatusCode::NOT_ACCEPTABLE);
+        assert_eq!(error.message, "Not Acceptable");
+        assert_eq!(
+            error.details.as_ref().unwrap()["response"],
+            "Not Acceptable"
+        );
+        assert_eq!(
+            error.details.as_ref().unwrap()["upstreamRequestShape"],
+            shape
+        );
+        let record =
+            error_record_value("req_1", "https://provider.test/v1", "glm-5.2", true, &error);
+        assert_eq!(record["error"]["status"], 406);
+        assert_eq!(record["error"]["response"], "Not Acceptable");
+        assert_eq!(record["upstreamRequestShape"], shape);
     }
 }
