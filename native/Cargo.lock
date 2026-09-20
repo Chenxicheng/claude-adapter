@@ -167,11 +167,10 @@ dependencies = [
 
 [[package]]
 name = "claude-adapter-native"
-version = "2.0.1"
+version = "2.0.0"
 dependencies = [
  "async-stream",
  "axum",
- "base64",
  "bytes",
  "chrono",
  "futures-util",

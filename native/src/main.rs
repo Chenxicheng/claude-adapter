@@ -415,12 +415,15 @@ fn build_client(config: &AdapterConfig) -> Result<reqwest::Client, String> {
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
+    headers.insert(
+        header::USER_AGENT,
+        HeaderValue::from_static("OpenAI/JS 4.76.0"),
+    );
     let authorization = HeaderValue::from_str(&format!("Bearer {}", config.api_key))
         .map_err(|error| format!("Invalid API key header: {error}"))?;
     headers.insert(header::AUTHORIZATION, authorization);
     reqwest::Client::builder()
         .default_headers(headers)
-        .user_agent("claude-adapter/2.0.1")
         .pool_idle_timeout(Duration::from_secs(90))
         .build()
         .map_err(|error| format!("Failed to create upstream client: {error}"))
@@ -490,7 +493,7 @@ impl Arguments {
                         .map_err(|_| format!("Invalid port: {value}"))?;
                 }
                 "--version" | "-V" => {
-                    println!("claude-adapter-native 2.0.1");
+                    println!("claude-adapter-native 2.0.0");
                     std::process::exit(0);
                 }
                 other => return Err(format!("Unknown argument: {other}")),

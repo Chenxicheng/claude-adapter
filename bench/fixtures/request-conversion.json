@@ -49,8 +49,8 @@
     "expected": {
       "model": "gpt-5.2",
       "messages": [
-        { "role": "system", "content": "Keep the next response concise." },
-        { "role": "user", "content": "Inspect the repository." }
+        { "role": "user", "content": "Inspect the repository." },
+        { "role": "assistant", "content": "Keep the next response concise." }
       ],
       "stream": false,
       "max_completion_tokens": 100
@@ -160,7 +160,8 @@
       "model": "gpt-4",
       "messages": [{ "role": "user", "content": "Hello" }],
       "stream": false,
-      "max_tokens": 10
+      "max_tokens": 10,
+      "tool_choice": "auto"
     }
   },
   {
@@ -175,7 +176,8 @@
       "model": "gpt-4",
       "messages": [{ "role": "user", "content": "Hello" }],
       "stream": false,
-      "max_tokens": 10
+      "max_tokens": 10,
+      "tool_choice": "auto"
     }
   },
   {
@@ -277,6 +279,79 @@
       "thinking": { "type": "enabled" },
       "tool_stream": true,
       "reasoning_effort": "high"
+    }
+  },
+  {
+    "name": "unknown fields and roles follow TypeScript mapping",
+    "input": {
+      "model": "gpt-4",
+      "max_tokens": 10,
+      "stream": false,
+      "system": "base",
+      "top_k": 40,
+      "messages": [
+        { "role": "user", "content": "hello", "unknown": true },
+        { "role": "system", "content": "mid-turn instruction" },
+        { "role": "hook", "content": "hook text" },
+        { "role": "user", "content": [{ "type": "search_result", "content": [] }] }
+      ],
+      "stop_sequences": [],
+      "tool_choice": { "type": "none" },
+      "output_config": {
+        "format": { "type": "json_schema", "schema": { "type": "object" } }
+      }
+    },
+    "expected": {
+      "model": "gpt-4",
+      "messages": [
+        { "role": "system", "content": "base" },
+        { "role": "user", "content": "hello" },
+        { "role": "assistant", "content": "mid-turn instruction" },
+        { "role": "assistant", "content": "hook text" }
+      ],
+      "stream": false,
+      "max_tokens": 10,
+      "stop": [],
+      "tool_choice": "auto"
+    }
+  },
+  {
+    "name": "tool result fallback and thinking history follow TypeScript mapping",
+    "input": {
+      "model": "gpt-4",
+      "max_tokens": 10,
+      "messages": [
+        {
+          "role": "assistant",
+          "content": [{ "type": "thinking", "thinking": "private", "signature": "sig" }]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "unmatched",
+              "content": [
+                { "type": "text", "text": "one" },
+                { "type": "search_result", "content": [] },
+                { "type": "text", "text": "two" }
+              ],
+              "is_error": true
+            },
+            { "type": "text", "text": "continue" }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "model": "gpt-4",
+      "messages": [
+        { "role": "assistant", "content": null },
+        { "role": "tool", "tool_call_id": "unmatched", "content": "Error: one\ntwo" },
+        { "role": "user", "content": "continue" }
+      ],
+      "stream": false,
+      "max_tokens": 10
     }
   }
 ]

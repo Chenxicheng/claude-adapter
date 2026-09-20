@@ -39,46 +39,17 @@ Accepts an Anthropic Messages request and forwards it to the configured OpenAI-c
 
 Every response includes `x-request-id`.
 
-`user`, `assistant`, and text-only mid-conversation `system` roles are accepted. A `system` message must follow a `user` turn and must be final or followed by an `assistant` turn. Its text is merged, in order, with the top-level system prompt into one leading OpenAI Chat Completions [`system` message](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create); it is never forwarded in the middle of the conversation. Messages with missing or null content are skipped for Claude Code hook compatibility. Short assistant-prefill tokens are filtered as in the TypeScript adapter because OpenAI-compatible providers may reject them. GPT-5 and OpenAI o-series models use `max_completion_tokens`; other models use `max_tokens`, with the existing Azure minimum adjustment. Unsupported or unknown fields, including `top_k`, per-message `clear_at` or `output_config`, Anthropic server tools, server-tool state, `allowed_callers`, `defer_loading`, and cache-only requests (`max_tokens: 0`) return `400`.
+Request conversion follows `main@8a19608` (TypeScript 1.2.2). `user` maps to OpenAI `user`; other non-empty string roles map to assistant history. Messages with missing or null content are skipped, and the same short assistant-prefill tokens are filtered. GPT-5 and OpenAI o-series models use `max_completion_tokens`; other models use `max_tokens`, with the existing Azure minimum adjustment. Required request shapes are validated, while unknown fields not converted by TypeScript are ignored instead of forwarded.
 
-Upstream requests explicitly send `Accept: application/json`, `Content-Type: application/json`, bearer authorization, and `stream: true | false`, matching the effective TypeScript/OpenAI SDK request contract.
+Upstream requests explicitly send `Accept: application/json`, `Content-Type: application/json`, bearer authorization, `stream: true | false`, and an OpenAI JavaScript SDK-compatible user agent.
 
-Client tools may omit `type` or use `type: "custom"`; names must be unique, match `[A-Za-z0-9_-]{1,64}`, and named tool choices must reference a declared tool. `input_schema` must be an object. Tool choices map as `none → none`, `auto → auto`, `any → required`, and named `tool → function`; no-op choices are omitted when no tools are present, while required choices without tools return `400`. `strict` and `disable_parallel_tool_use` are validated but omitted from the OpenAI-compatible request to preserve the established TypeScript wire shape across strict third-party providers. Omitted compatibility fields produce one names-only warning per request. Tool results must immediately and completely match the preceding tool calls. `cache_control` is accepted but not converted.
+Client tools map only `name`, `description`, and `input_schema`. Tool choices map as `auto → auto`, `any → required`, named `tool → function`, and other values → `auto`, matching the TypeScript converter. Tool-result text becomes `role=tool` messages in input order.
 
-`output_config.effort` maps to `reasoning_effort` only for GPT-5 and OpenAI o-series models; Anthropic `max` becomes OpenAI `xhigh`. Generic `thinking.enabled` and `thinking.adaptive` requests return `400`, and `thinking.disabled` is omitted unless a provider-specific GLM rule applies. GLM/Qwen tool history retains its required `reasoning_content`; other models strip historical thinking only when visible text or tool use remains. `output_config.format` is validated but omitted from the OpenAI-compatible request for TypeScript wire parity. `metadata.user_id` is validated but not forwarded. Empty stop arrays are omitted; o3/o4-mini requests with stop sequences return `400` because those models do not support `stop`.
-
-Historical assistant `thinking` and `redacted_thinking` blocks are removed only when the same turn still contains text or a tool call. A turn that would become empty returns `400`.
+For GPT-5 and OpenAI o-series models, `output_config.effort` and Anthropic thinking budgets map to the same `reasoning_effort` values as the TypeScript converter. GLM/Qwen retain their provider-specific options and tool-turn `reasoning_content`. Other historical thinking is not forwarded; a thinking-only historical turn becomes an assistant message with null content, matching TypeScript wire behavior. `output_config.format` and `metadata.user_id` are not forwarded. Stop arrays, including empty arrays, are forwarded as `stop`.
 
 ### Images
 
-Base64 sources become OpenAI data URLs:
-
-```json
-{
-  "type": "image",
-  "source": {
-    "type": "base64",
-    "media_type": "image/png",
-    "data": "iVBORw0KGgo..."
-  }
-}
-```
-
-HTTP and HTTPS URL sources are forwarded without downloading or rewriting:
-
-```json
-{
-  "type": "image",
-  "source": {
-    "type": "url",
-    "url": "https://example.com/image.png"
-  }
-}
-```
-
-The adapter validates Base64, URL schemes, supported image MIME types, and required fields. `file_id` sources return `400`; use Base64 or an HTTP(S) URL. GIF content is forwarded as an image, without an animation guarantee.
-
-For image-bearing `tool_result` blocks, text-only `role=tool` messages are emitted first. Images then appear in one `role=user` message labelled with the resolved `tool_call_id`. An image-only result receives an explicit `image follows` placeholder.
+Image blocks, including images nested in `tool_result`, currently return `400`. Image conversion will be reintroduced only after the text/tool request path is stable.
 
 ### Non-streaming response
 

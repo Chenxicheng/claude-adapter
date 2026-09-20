@@ -6,36 +6,21 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ---
 
-## [Unreleased]
-
-### Fixed
-
-- **Third-party compatibility**: Restored the TypeScript core request wire shape, added sanitized request-shape diagnostics for upstream rejections, and streams tool arguments once fragmented names are stable.
-- **HTTP compatibility**: Restored the TypeScript/OpenAI SDK JSON `Accept` header, explicit stream mode, and assistant-prefill filtering used by strict compatible providers.
-
----
-
-## [2.0.1] — 2026-09-20
-
-### Fixed
-
-- **Protocol validation**: Strictly validates supported Anthropic request fields, nested content, tool controls, structured output, and OpenAI upstream response shapes instead of silently dropping malformed data.
-- **Streaming**: Buffers split tool-call names and arguments, preserves sequential content-block indices, and reports missing final token usage as unknown rather than zero.
-- **Upstream compatibility**: Normalizes mid-conversation system instructions, restores model-aware token and reasoning fields, validates tool relationships locally, and omits no-op fields that strict OpenAI-compatible providers may reject.
-- **Tool history**: Preserves GLM/Qwen tool-turn reasoning and keeps tool-result images ahead of subsequent ordinary user content.
-
----
-
-## [2.0.0] — 2026-09-19
+## [2.0.0] — 2026-09-20
 
 ### Added
 
 - **Native proxy**: Moved HTTP, protocol conversion, SSE, tools, usage, and errors to a Rust service embedded in one offline npm package.
 - **Offline distribution**: Bundled Linux x64 and Windows x64 binaries plus production JavaScript dependencies into one transferable tarball.
-- **Protocol conversion**: Preserved assistant prefills, completed Anthropic tool-choice mapping, and now rejects unsupported roles, blocks, server tools, cache-only requests, and malformed upstream tool calls instead of silently dropping or approximating them.
+- **Protocol conversion**: Rebuilt the Rust request path against the established TypeScript converter so text, tools, assistant prefills, model options, and tool IDs retain the known-good OpenAI wire shape.
 - **Responses**: Unified streaming and non-streaming finish reasons, added refusal `stop_details` and current usage fields, and kept third-party reasoning text private while preserving its token breakdown.
-- **Vision input**: Added ordered Base64 and URL image conversion, including explicitly associated tool-result screenshots.
 - **Bounded observability**: Added buffered, asynchronous JSONL writers with graceful flush and saturation accounting.
+
+### Fixed
+
+- **Third-party compatibility**: Restored OpenAI JavaScript SDK-compatible JSON headers, bearer authorization, explicit stream mode, and user agent; unsupported image input now returns an explicit 400 while the text/tool path is stabilized.
+- **Streaming**: Buffers split tool-call names and arguments, preserves sequential content-block indices, and reports missing final token usage as unknown rather than zero.
+- **Diagnostics**: Records sanitized request-field shapes for upstream rejections without persisting prompts, tool inputs, schemas, headers, or credentials.
 
 ### Changed
 

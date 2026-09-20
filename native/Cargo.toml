@@ -1,13 +1,12 @@
 [package]
 name = "claude-adapter-native"
-version = "2.0.1"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.98"
 
 [dependencies]
 async-stream = "0.3"
 axum = "0.8.4"
-base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 futures-util = "0.3"

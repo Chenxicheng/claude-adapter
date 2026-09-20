@@ -173,7 +173,10 @@ async function verifyProtocolScenarios(url, mock) {
   const firstChatHeaders = mock.requestHeaders.at(-1);
   if (
     firstChat.messages[0]?.role !== 'system' ||
-    firstChat.messages[0]?.content !== 'Base instruction.\n\nBe concise.' ||
+    firstChat.messages[0]?.content !== 'Base instruction.' ||
+    firstChat.messages[1]?.role !== 'user' ||
+    firstChat.messages[2]?.role !== 'assistant' ||
+    firstChat.messages[2]?.content !== 'Be concise.' ||
     firstChat.messages.some((message, index) => index > 0 && message.role === 'system') ||
     firstChat.max_tokens !== 128 ||
     firstChat.stream !== false ||
@@ -186,7 +189,8 @@ async function verifyProtocolScenarios(url, mock) {
   if (
     firstChatHeaders.accept !== 'application/json' ||
     firstChatHeaders['content-type'] !== 'application/json' ||
-    firstChatHeaders.authorization !== 'Bearer benchmark'
+    firstChatHeaders.authorization !== 'Bearer benchmark' ||
+    firstChatHeaders['user-agent'] !== 'OpenAI/JS 4.76.0'
   ) {
     throw new Error('TypeScript-compatible HTTP headers preflight failed');
   }
@@ -462,6 +466,7 @@ async function startRustAdapter(baseUrl) {
         Accept: 'text/plain',
         Authorization: 'Bearer wrong',
         'Content-Type': 'text/plain',
+        'User-Agent': 'wrong',
       },
     })
   );
