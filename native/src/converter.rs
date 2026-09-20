@@ -10,6 +10,7 @@ use crate::error::AppError;
 
 const BILLING_HEADER: &str = "x-anthropic-billing-header:";
 const IMAGE_MEDIA_TYPES: &[&str] = &["image/jpeg", "image/png", "image/webp", "image/gif"];
+const ASSISTANT_PREFILL_TOKENS: &[&str] = &["{", "[", "```", "{\"", "[{"];
 const REQUEST_FIELDS: &[&str] = &[
     "model",
     "max_tokens",
@@ -114,13 +115,12 @@ fn validate_messages(messages: &[Value], errors: &mut Vec<String>) {
                 "messages[{message_index}].role: role is required and must be a string"
             )),
         }
-        if role == Some("system") {
+        let contentless = message_object_is_contentless(message);
+        if role == Some("system") && !contentless {
             validate_system_message(messages, message_index, message, errors);
         }
         match message.get("content") {
-            None | Some(Value::Null) => errors.push(format!(
-                "messages[{message_index}].content: content is required"
-            )),
+            None | Some(Value::Null) => {}
             Some(content) => match content {
                 Value::String(_) => {}
                 Value::Array(blocks) => {
@@ -320,21 +320,21 @@ fn validate_system_message(
     message: &Map<String, Value>,
     errors: &mut Vec<String>,
 ) {
-    let role_at = |index: usize| {
-        messages
-            .get(index)
-            .and_then(Value::as_object)
-            .and_then(|message| message.get("role"))
-            .and_then(Value::as_str)
-    };
-    if message_index == 0 || !matches!(role_at(message_index - 1), Some("user" | "system")) {
+    let previous_role = messages[..message_index]
+        .iter()
+        .rev()
+        .find(|message| !message_is_contentless(message))
+        .and_then(message_role);
+    if !matches!(previous_role, Some("user" | "system")) {
         errors.push(format!(
             "messages[{message_index}].role: system message must follow a user message"
         ));
     }
-    if message_index + 1 < messages.len()
-        && !matches!(role_at(message_index + 1), Some("assistant" | "system"))
-    {
+    let next_role = messages[message_index + 1..]
+        .iter()
+        .find(|message| !message_is_contentless(message))
+        .and_then(message_role);
+    if next_role.is_some() && !matches!(next_role, Some("assistant" | "system")) {
         errors.push(format!(
             "messages[{message_index}].role: system message must be last or followed by an assistant message"
         ));
@@ -674,6 +674,9 @@ fn validate_tool_history(messages: &[Value], errors: &mut Vec<String>) {
         let Some(message) = message.as_object() else {
             continue;
         };
+        if message_object_is_contentless(message) {
+            continue;
+        }
         let role = message.get("role").and_then(Value::as_str);
         let blocks = message.get("content").and_then(Value::as_array);
         let result_ids: Vec<String> = blocks
@@ -753,6 +756,23 @@ fn validate_tool_history(messages: &[Value], errors: &mut Vec<String>) {
     }
 }
 
+fn message_is_contentless(message: &Value) -> bool {
+    message
+        .as_object()
+        .is_some_and(message_object_is_contentless)
+}
+
+fn message_role(message: &Value) -> Option<&str> {
+    message
+        .as_object()
+        .and_then(|message| message.get("role"))
+        .and_then(Value::as_str)
+}
+
+fn message_object_is_contentless(message: &Map<String, Value>) -> bool {
+    message.get("content").is_none_or(Value::is_null)
+}
+
 fn reject_unknown_fields(
     object: &Map<String, Value>,
     allowed: &[&str],
@@ -804,6 +824,9 @@ pub fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> 
         .iter()
         .enumerate()
     {
+        if message_is_contentless(message) {
+            continue;
+        }
         if message.get("role").and_then(Value::as_str) == Some("system") {
             let content = message_content_text(message);
             if !content.is_empty() {
@@ -819,16 +842,16 @@ pub fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> 
             preserve_reasoning,
         )?);
     }
-    if messages.is_empty() {
-        return Err(AppError::bad_request(
-            "No messages after conversion: all input messages had missing content",
-        ));
-    }
     if !system_parts.is_empty() {
         messages.insert(
             0,
             json!({"role": "system", "content": system_parts.join("\n\n")}),
         );
+    }
+    if messages.is_empty() {
+        return Err(AppError::bad_request(
+            "No messages after conversion: all input messages had missing content",
+        ));
     }
     if stripped_thinking {
         eprintln!("[adapter] Stripped unsupported Anthropic thinking history from request");
@@ -862,16 +885,17 @@ pub fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> 
     }
     if !omitted_fields.is_empty() {
         eprintln!(
-            "[adapter] Validated but omitted compatibility fields: {}",
+            "[adapter] Validated input fields not sent upstream: {}",
             omitted_fields.join(", ")
         );
     }
     let mut output = Map::new();
     output.insert("model".into(), Value::String(model.to_owned()));
     output.insert("messages".into(), Value::Array(messages));
-    if let Some(stream) = request.get("stream") {
-        output.insert("stream".into(), stream.clone());
-    }
+    output.insert(
+        "stream".into(),
+        Value::Bool(request.get("stream").and_then(Value::as_bool) == Some(true)),
+    );
     let mut max_tokens = request["max_tokens"]
         .as_u64()
         .expect("validated max_tokens");
@@ -978,20 +1002,40 @@ fn convert_message(
         return Ok(Vec::new());
     };
     if let Some(content) = content.as_str() {
+        if role == "assistant" && is_assistant_prefill(content) {
+            return Ok(Vec::new());
+        }
         return Ok(vec![json!({"role": role, "content": content})]);
     }
 
     let blocks = content.as_array().expect("validated content array");
     match role {
         "user" => convert_user_blocks(blocks, message_index, ids),
-        _ => Ok(vec![convert_assistant_blocks(
-            blocks,
-            message_index,
-            ids,
-            stripped_thinking,
-            preserve_reasoning,
-        )?]),
+        _ => {
+            let converted = convert_assistant_blocks(
+                blocks,
+                message_index,
+                ids,
+                stripped_thinking,
+                preserve_reasoning,
+            )?;
+            if converted.get("tool_calls").is_none()
+                && converted
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_assistant_prefill)
+            {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![converted])
+            }
+        }
     }
+}
+
+fn is_assistant_prefill(content: &str) -> bool {
+    let trimmed = content.trim();
+    ASSISTANT_PREFILL_TOKENS.contains(&trimmed) || trimmed.encode_utf16().count() <= 2
 }
 
 fn convert_user_blocks(
@@ -1798,6 +1842,17 @@ mod tests {
         );
         assert_eq!(converted["messages"][1]["role"], "user");
 
+        let with_contentless_hook = json!({
+            "model": "gpt-5.2", "max_tokens": 10,
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "system", "content": "be concise"},
+                {"role": "user", "content": null},
+                {"role": "assistant", "content": "understood"}
+            ]
+        });
+        validate_request(&with_contentless_hook).unwrap();
+
         for body in [
             json!({
                 "model": "gpt-5.2", "max_tokens": 10,
@@ -1825,11 +1880,14 @@ mod tests {
     }
 
     #[test]
-    fn preserves_prefill_and_maps_tool_controls() {
+    fn filters_prefill_and_maps_tool_controls() {
         let body = json!({
             "model": "gpt-4",
             "max_tokens": 10,
-            "messages": [{"role": "assistant", "content": "{"}],
+            "messages": [
+                {"role": "user", "content": "Return JSON"},
+                {"role": "assistant", "content": "{"}
+            ],
             "tools": [{
                 "type": "custom",
                 "name": "lookup",
@@ -1846,17 +1904,25 @@ mod tests {
         });
         validate_request(&body).unwrap();
         let converted = convert_request(&body, "https://api.openai.com/v1").unwrap();
-        assert_eq!(converted["messages"][0]["content"], "{");
+        assert_eq!(
+            converted["messages"],
+            json!([{"role": "user", "content": "Return JSON"}])
+        );
         assert!(converted["tools"][0]["function"].get("strict").is_none());
         assert_eq!(converted["tool_choice"]["function"]["name"], "lookup");
         assert!(converted.get("parallel_tool_calls").is_none());
+
+        let unicode = json!({
+            "model": "gpt-4", "max_tokens": 10,
+            "messages": [{"role": "assistant", "content": "🙂🙂"}]
+        });
+        let converted = convert_request(&unicode, "https://api.openai.com/v1").unwrap();
+        assert_eq!(converted["messages"][0]["content"], "🙂🙂");
     }
 
     #[test]
     fn validates_strict_request_fields_and_maps_exact_options() {
         for body in [
-            json!({"model": "gpt-5", "max_tokens": 1, "messages": [{"role": "user"}]}),
-            json!({"model": "gpt-5", "max_tokens": 1, "messages": [{"role": "user", "content": null}]}),
             json!({"model": "gpt-5", "max_tokens": 1, "messages": [{"role": "user", "content": "ok"}], "top_k": 1}),
             json!({"model": "gpt-5", "max_tokens": 1, "messages": [{"role": "user", "content": "ok"}], "tool_choice": {"type": "auto", "name": "lookup"}}),
             json!({"model": "gpt-5", "max_tokens": 1, "messages": [{"role": "user", "content": "ok"}], "cache_control": {"type": "ephemeral", "ttl": "2h"}}),
@@ -1867,6 +1933,51 @@ mod tests {
                 "body should be rejected: {body}"
             );
         }
+
+        let contentless_hooks = json!({
+            "model": "gpt-4", "max_tokens": 10,
+            "messages": [
+                {"role": "system"},
+                {"role": "user"},
+                {"role": "assistant", "content": null},
+                {"role": "user", "content": "continue"}
+            ]
+        });
+        let converted = convert_request(&contentless_hooks, "https://example.com/v1").unwrap();
+        assert_eq!(
+            converted["messages"],
+            json!([{"role": "user", "content": "continue"}])
+        );
+
+        let contentless_system_hook = json!({
+            "model": "gpt-4", "max_tokens": 10,
+            "system": "Base instruction",
+            "messages": [
+                {"role": "user", "content": "continue"},
+                {"role": "system"}
+            ]
+        });
+        let converted =
+            convert_request(&contentless_system_hook, "https://example.com/v1").unwrap();
+        assert_eq!(
+            converted["messages"],
+            json!([
+                {"role": "system", "content": "Base instruction"},
+                {"role": "user", "content": "continue"}
+            ])
+        );
+
+        let system_only_after_hooks = json!({
+            "model": "gpt-4", "max_tokens": 10,
+            "system": "Base instruction",
+            "messages": [{"role": "user"}]
+        });
+        let converted =
+            convert_request(&system_only_after_hooks, "https://example.com/v1").unwrap();
+        assert_eq!(
+            converted["messages"],
+            json!([{"role": "system", "content": "Base instruction"}])
+        );
 
         let body = json!({
             "model": "gpt-5",
@@ -2099,14 +2210,26 @@ mod tests {
     fn validates_but_omits_structured_output_with_assistant_prefill() {
         let body = json!({
             "model": "gpt-5", "max_tokens": 10,
-            "messages": [{"role": "assistant", "content": "{"}],
+            "messages": [
+                {"role": "user", "content": "Return JSON"},
+                {"role": "assistant", "content": [{"type": "text", "text": "{"}]}
+            ],
             "output_config": {
                 "format": {"type": "json_schema", "schema": {"type": "object"}}
             }
         });
         let converted = convert_request(&body, "https://api.openai.com/v1").unwrap();
-        assert_eq!(converted["messages"][0]["content"], "{");
+        assert_eq!(
+            converted["messages"],
+            json!([{"role": "user", "content": "Return JSON"}])
+        );
         assert!(converted.get("response_format").is_none());
+
+        let only_prefill = json!({
+            "model": "gpt-4", "max_tokens": 10,
+            "messages": [{"role": "assistant", "content": "```"}]
+        });
+        assert!(convert_request(&only_prefill, "https://api.openai.com/v1").is_err());
     }
 
     #[test]
@@ -2259,6 +2382,7 @@ mod tests {
                     {"type": "tool_use", "id": "duplicate_tool_id", "name": "first", "input": {}},
                     {"type": "tool_use", "id": "duplicate_tool_id", "name": "second", "input": {}}
                 ]},
+                {"role": "user", "content": null},
                 {"role": "user", "content": [
                     {"type": "tool_result", "tool_use_id": "duplicate_tool_id", "content": "one"},
                     {"type": "tool_result", "tool_use_id": "duplicate_tool_id", "content": "two"}

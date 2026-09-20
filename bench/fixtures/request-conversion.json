@@ -9,6 +9,7 @@
     "expected": {
       "model": "gpt-4",
       "messages": [{ "role": "user", "content": "Hello" }],
+      "stream": false,
       "max_tokens": 100
     }
   },
@@ -51,6 +52,7 @@
         { "role": "system", "content": "Keep the next response concise." },
         { "role": "user", "content": "Inspect the repository." }
       ],
+      "stream": false,
       "max_completion_tokens": 100
     }
   },
@@ -93,6 +95,7 @@
         },
         { "role": "tool", "tool_call_id": "toolu_123", "content": "Sunny" }
       ],
+      "stream": false,
       "max_tokens": 100
     }
   },
@@ -107,6 +110,7 @@
     "expected": {
       "model": "gpt-5.2",
       "messages": [{ "role": "user", "content": "Think" }],
+      "stream": false,
       "max_completion_tokens": 100,
       "reasoning_effort": "xhigh"
     }
@@ -122,7 +126,26 @@
     "expected": {
       "model": "gpt-4",
       "messages": [{ "role": "user", "content": "Hello" }],
+      "stream": false,
       "max_tokens": 100
+    }
+  },
+  {
+    "name": "contentless hook messages omitted",
+    "input": {
+      "model": "gpt-4",
+      "max_tokens": 10,
+      "messages": [
+        { "role": "user" },
+        { "role": "assistant", "content": null },
+        { "role": "user", "content": "Continue" }
+      ]
+    },
+    "expected": {
+      "model": "gpt-4",
+      "messages": [{ "role": "user", "content": "Continue" }],
+      "stream": false,
+      "max_tokens": 10
     }
   },
   {
@@ -136,6 +159,7 @@
     "expected": {
       "model": "gpt-4",
       "messages": [{ "role": "user", "content": "Hello" }],
+      "stream": false,
       "max_tokens": 10
     }
   },
@@ -150,6 +174,7 @@
     "expected": {
       "model": "gpt-4",
       "messages": [{ "role": "user", "content": "Hello" }],
+      "stream": false,
       "max_tokens": 10
     }
   },
@@ -165,6 +190,7 @@
     "expected": {
       "model": "gpt-4",
       "messages": [{ "role": "user", "content": "Hello" }],
+      "stream": false,
       "max_tokens": 10,
       "tools": [
         {
@@ -180,7 +206,10 @@
     "input": {
       "model": "gpt-4",
       "max_tokens": 10,
-      "messages": [{ "role": "assistant", "content": "{" }],
+      "messages": [
+        { "role": "user", "content": "Return JSON" },
+        { "role": "assistant", "content": "{" }
+      ],
       "tools": [
         {
           "type": "custom",
@@ -195,7 +224,8 @@
     },
     "expected": {
       "model": "gpt-4",
-      "messages": [{ "role": "assistant", "content": "{" }],
+      "messages": [{ "role": "user", "content": "Return JSON" }],
+      "stream": false,
       "max_tokens": 10,
       "tools": [
         {

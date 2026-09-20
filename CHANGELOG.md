@@ -11,6 +11,7 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 ### Fixed
 
 - **Third-party compatibility**: Restored the TypeScript core request wire shape, added sanitized request-shape diagnostics for upstream rejections, and streams tool arguments once fragmented names are stable.
+- **HTTP compatibility**: Restored the TypeScript/OpenAI SDK JSON `Accept` header, explicit stream mode, and assistant-prefill filtering used by strict compatible providers.
 
 ---
 

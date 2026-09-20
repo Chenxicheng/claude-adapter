@@ -401,9 +401,6 @@ fn request_id() -> String {
 
 fn build_client(config: &AdapterConfig) -> Result<reqwest::Client, String> {
     let mut headers = HeaderMap::new();
-    let authorization = HeaderValue::from_str(&format!("Bearer {}", config.api_key))
-        .map_err(|error| format!("Invalid API key header: {error}"))?;
-    headers.insert(header::AUTHORIZATION, authorization);
     if let Some(custom) = &config.upstream_headers {
         for (name, value) in custom {
             let name = HeaderName::from_bytes(name.as_bytes())
@@ -413,6 +410,14 @@ fn build_client(config: &AdapterConfig) -> Result<reqwest::Client, String> {
             headers.insert(name, value);
         }
     }
+    headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    let authorization = HeaderValue::from_str(&format!("Bearer {}", config.api_key))
+        .map_err(|error| format!("Invalid API key header: {error}"))?;
+    headers.insert(header::AUTHORIZATION, authorization);
     reqwest::Client::builder()
         .default_headers(headers)
         .user_agent("claude-adapter/2.0.1")

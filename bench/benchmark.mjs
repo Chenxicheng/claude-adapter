@@ -170,16 +170,25 @@ async function verifyProtocolScenarios(url, mock) {
   if (!firstChatResponse.ok) throw new Error('First-chat compatibility preflight failed');
   await firstChatResponse.json();
   const firstChat = mock.requests.at(-1);
+  const firstChatHeaders = mock.requestHeaders.at(-1);
   if (
     firstChat.messages[0]?.role !== 'system' ||
     firstChat.messages[0]?.content !== 'Base instruction.\n\nBe concise.' ||
     firstChat.messages.some((message, index) => index > 0 && message.role === 'system') ||
     firstChat.max_tokens !== 128 ||
+    firstChat.stream !== false ||
     'max_completion_tokens' in firstChat ||
     'safety_identifier' in firstChat ||
     'reasoning_effort' in firstChat
   ) {
     throw new Error('First-chat request conversion preflight failed');
+  }
+  if (
+    firstChatHeaders.accept !== 'application/json' ||
+    firstChatHeaders['content-type'] !== 'application/json' ||
+    firstChatHeaders.authorization !== 'Bearer benchmark'
+  ) {
+    throw new Error('TypeScript-compatible HTTP headers preflight failed');
   }
 
   const toolResponse = await fetch(`${url}/v1/messages`, {
@@ -291,6 +300,7 @@ function percentile(values, percentileValue) {
 
 async function startMockUpstream() {
   const requests = [];
+  const requestHeaders = [];
   let disconnects = 0;
   let longChunks = 0;
   const server = http.createServer(async (request, response) => {
@@ -298,6 +308,7 @@ async function startMockUpstream() {
     for await (const chunk of request) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString());
     requests.push(body);
+    requestHeaders.push(request.headers);
     if (upstreamDelayMs > 0) {
       await new Promise((resolveDelay) => setTimeout(resolveDelay, upstreamDelayMs));
     }
@@ -419,6 +430,7 @@ async function startMockUpstream() {
   return {
     url: `http://127.0.0.1:${port}/v1`,
     requests,
+    requestHeaders,
     disconnectCount: () => disconnects,
     longChunksSent: () => longChunks,
     stop: () => close(server),
@@ -446,6 +458,11 @@ async function startRustAdapter(baseUrl) {
       baseUrl,
       apiKey: 'benchmark',
       models: { opus: 'benchmark-model', sonnet: 'benchmark-model', haiku: 'benchmark-model' },
+      upstreamHeaders: {
+        Accept: 'text/plain',
+        Authorization: 'Bearer wrong',
+        'Content-Type': 'text/plain',
+      },
     })
   );
   const child = spawn(
