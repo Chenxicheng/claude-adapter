@@ -1,12 +1,16 @@
 // Configuration types for claude-adapter
 
-export interface AdapterConfig {
+interface AdapterConfigBase {
     baseUrl: string;
-    apiKey: string;
     models: ModelConfig;
     upstreamHeaders?: Record<string, string>;
     port?: number;
 }
+
+export type AdapterConfig = AdapterConfigBase & (
+    | { apiKey: string; apiKeyEnv?: never }
+    | { apiKey?: never; apiKeyEnv: string }
+);
 
 export interface ModelConfig {
     opus: string;

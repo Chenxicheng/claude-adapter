@@ -89,6 +89,17 @@ describe('Config Utilities', () => {
             expect(result).toEqual(config);
         });
 
+        it('should load an environment-backed API key configuration', () => {
+            const config = {
+                baseUrl: 'https://api.example.com',
+                apiKeyEnv: 'OPENAI_API_KEY',
+                models: { opus: 'gpt-4', sonnet: 'gpt-3.5', haiku: 'gpt-3.5' },
+            };
+            writeFileSync(join(ADAPTER_DIR, 'config.json'), JSON.stringify(config));
+
+            expect(loadConfig()).toEqual(config);
+        });
+
         it('should preserve legacy config fields without failing to load', () => {
             const legacyConfig = {
                 baseUrl: 'https://api.example.com',
@@ -127,6 +138,18 @@ describe('Config Utilities', () => {
 
             const content = readFileSync(join(ADAPTER_DIR, 'config.json'), 'utf-8');
             expect(JSON.parse(content)).toEqual(config);
+        });
+
+        it('should save only the environment variable name for environment credentials', () => {
+            saveConfig({
+                baseUrl: 'https://api.test.com',
+                apiKeyEnv: 'OPENAI_API_KEY',
+                models: { opus: 'model-1', sonnet: 'model-2', haiku: 'model-3' },
+            });
+
+            const content = JSON.parse(readFileSync(join(ADAPTER_DIR, 'config.json'), 'utf-8'));
+            expect(content.apiKeyEnv).toBe('OPENAI_API_KEY');
+            expect(content.apiKey).toBeUndefined();
         });
 
         it('should create directory if not exists', () => {

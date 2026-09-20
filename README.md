@@ -41,7 +41,7 @@ This adapter effectively "tricks" Claude Code into communicating with models it 
 
 The adapter operates as a native Rust HTTP server that mimics the Anthropic API structure while forwarding requests to an upstream OpenAI-compatible target. One self-contained npm tarball includes the Linux x64 and Windows x64 binaries plus all production JavaScript dependencies, so it can be transferred and installed offline without Rust or registry access.
 
-For broad third-party compatibility, the native request converter follows the `main` TypeScript 1.2.2 wire behavior and the effective OpenAI JavaScript SDK transport contract. Image requests are intentionally rejected until the text/tool path is stable. When an upstream request is rejected, local error JSONL includes a sanitized field-level request shape without recording prompts, tool inputs, schemas, headers, or credentials.
+For broad third-party compatibility, the native request converter follows the `main` TypeScript 1.2.2 wire behavior, including forwarding configured upstream headers such as `User-Agent`, `HTTP-Referer`, and provider-specific `X-*` headers. Image requests are intentionally rejected until the text/tool path is stable. When an upstream request is rejected, local error JSONL includes a sanitized field-level request shape without recording prompts, tool inputs, schemas, headers, or credentials.
 
 ```
 ┌─────────────┐      ┌─────────────────┐      ┌─────────────────┐
@@ -92,7 +92,7 @@ The package selects its embedded binary at runtime. Version 2.0 supports Linux g
 2. **Configuration Wizard:**
    The CLI will guide you through the necessary configuration steps:
    - **Base URL**: Enter the endpoint URL of your compatible provider.
-   - **Authentication**: Securely input your API key.
+   - **Authentication**: Enter an API key or select an environment variable that already contains it.
    - **Model Mapping**: Define which OpenAI-compatible models should be aliased to Claude's internal identifiers (`opus`, `sonnet`, `haiku`).
    - **Tool Support**: Upstream models must support native tool/function calling if you want Claude Code tools to work through the adapter.
 
@@ -102,6 +102,24 @@ The package selects its embedded binary at runtime. Version 2.0 supports Linux g
 ---
 
 ## Configuration
+
+API credentials can be stored directly or resolved from an environment variable. The interactive
+wizard defaults to direct entry. Environment-backed configuration stores only the variable name:
+
+```json
+{
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKeyEnv": "OPENAI_API_KEY",
+  "models": {
+    "opus": "gpt-4.1",
+    "sonnet": "gpt-4.1",
+    "haiku": "gpt-4.1-mini"
+  }
+}
+```
+
+Set the variable before starting `claude-adapter`. After changing a system environment variable,
+restart the terminal and adapter. `apiKey` and `apiKeyEnv` are mutually exclusive.
 
 ### CLI Options
 
@@ -146,7 +164,7 @@ Version 2 is a CLI-only product. The previous JavaScript `createServer` and conv
 | Token Limits          |       ✅       | Field selected by target model family                    |
 | Sampling (Temp/Top P) |       ✅       | Parameter pass-through                                   |
 | Stop Sequences        |       ✅       | Mapped to API equivalent                                 |
-| Multimodal (Vision)   |       ✅       | Base64/URL input; upstream model must support vision     |
+| Multimodal (Vision)   |       ❌       | Image input currently returns 400                        |
 
 ---
 

@@ -16,6 +16,7 @@ import { UI } from './utils/ui';
 import { checkForUpdates } from './utils/update';
 import { getMetadata } from './utils/metadata';
 import { parseUpstreamHeadersInput } from './utils/upstreamHeaders';
+import { parseApiKeyEnvInput } from './utils/apiKey';
 import { version } from '../package.json';
 
 const program = new Command();
@@ -139,17 +140,45 @@ async function promptForConfiguration(): Promise<AdapterConfig> {
       },
     },
     {
+      type: 'list',
+      name: 'apiKeySource',
+      prefix,
+      message: 'API Key source:',
+      choices: [
+        { name: 'Enter API key', value: 'plaintext' },
+        { name: 'Read from environment variable', value: 'environment' },
+      ],
+      default: 'plaintext',
+    },
+    {
       type: 'password',
       name: 'apiKey',
       prefix,
       message: 'API Key:',
       mask: '*',
+      when: (answers) => answers.apiKeySource === 'plaintext',
       transformer: (input: string) => UI.highlight('*'.repeat(input.length)),
       validate: (input: string) => {
         if (!input || input.trim() === '') {
           return 'API key is required';
         }
         return true;
+      },
+    },
+    {
+      type: 'input',
+      name: 'apiKeyEnv',
+      prefix,
+      message: 'API Key environment variable:',
+      when: (answers) => answers.apiKeySource === 'environment',
+      transformer: (input: string) => UI.highlight(input),
+      validate: (input: string) => {
+        try {
+          parseApiKeyEnvInput(input);
+          return true;
+        } catch (error) {
+          return (error as Error).message;
+        }
       },
     },
     {
@@ -226,10 +255,14 @@ async function promptForConfiguration(): Promise<AdapterConfig> {
   ]);
 
   const upstreamHeaders = parseUpstreamHeadersInput(upstreamHeadersAnswer.upstreamHeaders);
+  const credentials =
+    requiredAnswers.apiKeySource === 'environment'
+      ? { apiKeyEnv: parseApiKeyEnvInput(requiredAnswers.apiKeyEnv) }
+      : { apiKey: requiredAnswers.apiKey.trim() };
 
   return {
     baseUrl: requiredAnswers.baseUrl.trim(),
-    apiKey: requiredAnswers.apiKey.trim(),
+    ...credentials,
     models: {
       opus: opusModel,
       sonnet: sonnetModel,

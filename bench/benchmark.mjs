@@ -190,7 +190,9 @@ async function verifyProtocolScenarios(url, mock) {
     firstChatHeaders.accept !== 'application/json' ||
     firstChatHeaders['content-type'] !== 'application/json' ||
     firstChatHeaders.authorization !== 'Bearer benchmark' ||
-    firstChatHeaders['user-agent'] !== 'OpenAI/JS 4.76.0'
+    firstChatHeaders['user-agent'] !== 'Claude-Adapter-Benchmark/2.0' ||
+    firstChatHeaders['http-referer'] !== 'https://example.com' ||
+    firstChatHeaders['x-title'] !== 'Claude Adapter Benchmark'
   ) {
     throw new Error('TypeScript-compatible HTTP headers preflight failed');
   }
@@ -460,20 +462,22 @@ async function startRustAdapter(baseUrl) {
     config,
     JSON.stringify({
       baseUrl,
-      apiKey: 'benchmark',
+      apiKeyEnv: 'CLAUDE_ADAPTER_BENCH_API_KEY',
       models: { opus: 'benchmark-model', sonnet: 'benchmark-model', haiku: 'benchmark-model' },
       upstreamHeaders: {
-        Accept: 'text/plain',
-        Authorization: 'Bearer wrong',
-        'Content-Type': 'text/plain',
-        'User-Agent': 'wrong',
+        'HTTP-Referer': 'https://example.com',
+        'X-Title': 'Claude Adapter Benchmark',
+        'User-Agent': 'Claude-Adapter-Benchmark/2.0',
       },
     })
   );
   const child = spawn(
     path.resolve('native/target/release/claude-adapter-native'),
     ['--config', config, '--port', '0'],
-    { stdio: ['ignore', 'pipe', process.env.BENCH_DEBUG ? 'inherit' : 'ignore'] }
+    {
+      stdio: ['ignore', 'pipe', process.env.BENCH_DEBUG ? 'inherit' : 'ignore'],
+      env: { ...process.env, CLAUDE_ADAPTER_BENCH_API_KEY: 'benchmark' },
+    }
   );
   const url = await new Promise((resolveReady, reject) => {
     let output = '';

@@ -4,7 +4,7 @@
 
 `claude-adapter` 2.0 is a CLI product. One self-contained npm package owns offline installation, configuration prompts, embedded native binary selection, Claude settings updates, startup feedback, and signal forwarding. The Rust binary owns the listener, validation, upstream HTTP, Anthropic/OpenAI conversion, SSE, tools, usage/error storage, and runtime logging. There is no Node proxy fallback or JavaScript library API.
 
-The existing `~/.claude-adapter/config.json` shape and CLI flags remain valid. The native process receives `--config <absolute-path>` and `--port <preferred>`, binds the first available loopback port, then prints one `CLAUDE_ADAPTER_READY=<json>` line after the listener is active. Node forwards Unix signals directly; on Windows it requests the same graceful drain through the child stdin pipe before using the 10-second forced-stop fallback.
+The existing `~/.claude-adapter/config.json` shape and CLI flags remain valid. Credentials use exactly one of the existing plaintext `apiKey` field or `apiKeyEnv`, which stores only a portable environment variable name. Rust resolves environment-backed credentials once at startup from the inherited process environment and never persists the value. The native process receives `--config <absolute-path>` and `--port <preferred>`, binds the first available loopback port, then prints one `CLAUDE_ADAPTER_READY=<json>` line after the listener is active. Node forwards Unix signals directly; on Windows it requests the same graceful drain through the child stdin pipe before using the 10-second forced-stop fallback.
 
 ## Protocol requirements
 
@@ -12,7 +12,7 @@ The existing `~/.claude-adapter/config.json` shape and CLI flags remain valid. T
 - Accept request bodies up to 32 MiB and at most 128 in-flight requests.
 - Reuse one upstream HTTP client. Downstream polling must drive upstream polling so slow readers apply backpressure and disconnects cancel upstream work.
 - Treat `main@8a19608` as the request-conversion oracle. Rust must emit the same Chat Completions JSON fields and role/block mapping as the TypeScript 1.2.2 converter before adding any Rust-only protocol behavior.
-- Match the effective OpenAI JavaScript SDK 4.76.0 transport contract: JSON `Accept`/`Content-Type`, bearer authorization, explicit `stream`, and its compatible user agent. Provider telemetry headers are not required.
+- Match the TypeScript transport contract: JSON `Accept`/`Content-Type`, bearer authorization, explicit `stream`, and unchanged forwarding of configured upstream headers, including `User-Agent` and provider-specific headers.
 - Skip contentless hook messages, filter the same short assistant-prefill tokens, map non-user string/array turns as assistant history, and preserve the TypeScript tool ID repair and tool-result ordering behavior.
 - Tools and tool choices follow the TypeScript converter exactly. Rust-only validation must not reject fields that TypeScript accepted or add fields that TypeScript did not send upstream.
 - Image blocks in user messages or tool results return an explicit `400`; image conversion is deferred until the text/tool request path is stable.

@@ -31,11 +31,18 @@ export function saveConfig(config: AdapterConfig): void {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });
   }
 
-  const normalizedConfig: AdapterConfig = {
-    baseUrl: config.baseUrl,
-    apiKey: config.apiKey,
-    models: config.models,
-  };
+  const normalizedConfig: AdapterConfig =
+    config.apiKeyEnv !== undefined
+      ? {
+          baseUrl: config.baseUrl,
+          apiKeyEnv: config.apiKeyEnv,
+          models: config.models,
+        }
+      : {
+          baseUrl: config.baseUrl,
+          apiKey: config.apiKey,
+          models: config.models,
+        };
 
   if (config.upstreamHeaders !== undefined) {
     normalizedConfig.upstreamHeaders = config.upstreamHeaders;

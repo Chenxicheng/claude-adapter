@@ -11,6 +11,7 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 ### Added
 
 - **Native proxy**: Moved HTTP, protocol conversion, SSE, tools, usage, and errors to a Rust service embedded in one offline npm package.
+- **Credential configuration**: Added mutually exclusive `apiKeyEnv` support so the native service can resolve an API key from its inherited environment without storing the secret in `config.json`.
 - **Offline distribution**: Bundled Linux x64 and Windows x64 binaries plus production JavaScript dependencies into one transferable tarball.
 - **Protocol conversion**: Rebuilt the Rust request path against the established TypeScript converter so text, tools, assistant prefills, model options, and tool IDs retain the known-good OpenAI wire shape.
 - **Responses**: Unified streaming and non-streaming finish reasons, added refusal `stop_details` and current usage fields, and kept third-party reasoning text private while preserving its token breakdown.
@@ -18,7 +19,7 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ### Fixed
 
-- **Third-party compatibility**: Restored OpenAI JavaScript SDK-compatible JSON headers, bearer authorization, explicit stream mode, and user agent; unsupported image input now returns an explicit 400 while the text/tool path is stabilized.
+- **Third-party compatibility**: Restored JSON headers, bearer authorization, explicit stream mode, and unchanged forwarding of configured upstream headers such as `User-Agent`; unsupported image input now returns an explicit 400 while the text/tool path is stabilized.
 - **Streaming**: Buffers split tool-call names and arguments, preserves sequential content-block indices, and reports missing final token usage as unknown rather than zero.
 - **Diagnostics**: Records sanitized request-field shapes for upstream rejections without persisting prompts, tool inputs, schemas, headers, or credentials.
 

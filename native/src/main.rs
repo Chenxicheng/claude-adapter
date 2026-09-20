@@ -400,33 +400,54 @@ fn request_id() -> String {
 }
 
 fn build_client(config: &AdapterConfig) -> Result<reqwest::Client, String> {
+    let headers = build_default_headers(config)?;
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .build()
+        .map_err(|error| format!("Failed to create upstream client: {error}"))
+}
+
+fn build_default_headers(config: &AdapterConfig) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     if let Some(custom) = &config.upstream_headers {
         for (name, value) in custom {
-            let name = HeaderName::from_bytes(name.as_bytes())
+            let header_name = HeaderName::from_bytes(name.as_bytes())
                 .map_err(|error| format!("Invalid upstream header {name}: {error}"))?;
+            if [
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                header::ACCEPT,
+                header::CONTENT_LENGTH,
+                header::HOST,
+            ]
+            .contains(&header_name)
+            {
+                return Err(format!(
+                    "Upstream header {name} is reserved and cannot be configured"
+                ));
+            }
             let value = HeaderValue::from_str(value)
                 .map_err(|error| format!("Invalid upstream header value: {error}"))?;
-            headers.insert(name, value);
+            headers.insert(header_name, value);
         }
+    }
+    if !headers.contains_key(header::USER_AGENT) {
+        headers.insert(
+            header::USER_AGENT,
+            HeaderValue::from_static("OpenAI/JS 4.76.0"),
+        );
     }
     headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
-    headers.insert(
-        header::USER_AGENT,
-        HeaderValue::from_static("OpenAI/JS 4.76.0"),
-    );
-    let authorization = HeaderValue::from_str(&format!("Bearer {}", config.api_key))
+    let api_key = config.resolve_api_key()?;
+    let authorization = HeaderValue::from_str(&format!("Bearer {api_key}"))
         .map_err(|error| format!("Invalid API key header: {error}"))?;
     headers.insert(header::AUTHORIZATION, authorization);
-    reqwest::Client::builder()
-        .default_headers(headers)
-        .pool_idle_timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|error| format!("Failed to create upstream client: {error}"))
+    Ok(headers)
 }
 
 async fn bind_available(preferred: u16) -> Result<(TcpListener, u16), String> {
@@ -508,7 +529,83 @@ impl Arguments {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
+
+    #[test]
+    fn custom_upstream_headers_are_preserved() {
+        let config = AdapterConfig {
+            base_url: "https://provider.test/v1".to_owned(),
+            api_key: Some("secret".to_owned()),
+            api_key_env: None,
+            upstream_headers: Some(HashMap::from([
+                ("HTTP-Referer".to_owned(), "https://example.com".to_owned()),
+                ("X-Title".to_owned(), "Claude Adapter".to_owned()),
+                ("User-Agent".to_owned(), "Claude-Adapter/2.0".to_owned()),
+            ])),
+        };
+
+        let headers = build_default_headers(&config).unwrap();
+
+        assert_eq!(headers["http-referer"], "https://example.com");
+        assert_eq!(headers["x-title"], "Claude Adapter");
+        assert_eq!(headers[header::USER_AGENT], "Claude-Adapter/2.0");
+        assert_eq!(headers[header::ACCEPT], "application/json");
+        assert_eq!(headers[header::CONTENT_TYPE], "application/json");
+        assert_eq!(headers[header::AUTHORIZATION], "Bearer secret");
+    }
+
+    #[test]
+    fn default_user_agent_is_used_when_not_configured() {
+        let config = AdapterConfig {
+            base_url: "https://provider.test/v1".to_owned(),
+            api_key: Some("secret".to_owned()),
+            api_key_env: None,
+            upstream_headers: None,
+        };
+
+        let headers = build_default_headers(&config).unwrap();
+
+        assert_eq!(headers[header::USER_AGENT], "OpenAI/JS 4.76.0");
+    }
+
+    #[test]
+    fn reserved_upstream_headers_are_rejected() {
+        for name in [
+            "Authorization",
+            "Content-Type",
+            "Accept",
+            "Content-Length",
+            "Host",
+        ] {
+            let config = AdapterConfig {
+                base_url: "https://provider.test/v1".to_owned(),
+                api_key: Some("secret".to_owned()),
+                api_key_env: None,
+                upstream_headers: Some(HashMap::from([(name.to_owned(), "wrong".to_owned())])),
+            };
+
+            let error = build_default_headers(&config).unwrap_err();
+
+            assert!(error.contains("is reserved and cannot be configured"));
+        }
+    }
+
+    #[test]
+    fn invalid_api_key_header_does_not_leak_the_secret() {
+        let config = AdapterConfig {
+            base_url: "https://provider.test/v1".to_owned(),
+            api_key: Some("secret\nvalue".to_owned()),
+            api_key_env: None,
+            upstream_headers: None,
+        };
+
+        let error = build_default_headers(&config).unwrap_err();
+
+        assert!(error.contains("Invalid API key header"));
+        assert!(!error.contains("secret"));
+    }
 
     #[test]
     fn plain_upstream_error_keeps_status_and_sanitized_request_shape() {

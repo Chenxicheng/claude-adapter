@@ -18,6 +18,7 @@ const spawnMock = jest.mocked(spawn);
 const existsSyncMock = jest.mocked(existsSync);
 const originalPlatform = process.platform;
 const originalArch = process.arch;
+const TEST_API_KEY_ENV = 'CLAUDE_ADAPTER_TEST_API_KEY';
 
 interface FakeChild extends ChildProcess {
   stdout: PassThrough;
@@ -58,6 +59,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete process.env[TEST_API_KEY_ENV];
   jest.useRealTimers();
   Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
   Object.defineProperty(process, 'arch', { value: originalArch, configurable: true });
@@ -123,6 +125,19 @@ describe('native process lifecycle', () => {
       expect(options.env?.CLAUDE_ADAPTER_STDIN_SHUTDOWN).toBeUndefined();
       expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     }
+  });
+
+  it('passes API key environment variables to the native process', async () => {
+    process.env[TEST_API_KEY_ENV] = 'secret';
+    const child = createFakeChild();
+    spawnMock.mockReturnValue(child);
+
+    const starting = startNativeServer('/tmp/config.json', 3080);
+    child.stdout.write('CLAUDE_ADAPTER_READY={"url":"http://localhost:3080"}\n');
+    const server = await starting;
+
+    expect(spawnMock.mock.calls[0][2]?.env?.[TEST_API_KEY_ENV]).toBe('secret');
+    await server.stop();
   });
 
   it('rejects an invalid ready record', async () => {

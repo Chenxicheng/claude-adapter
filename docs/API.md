@@ -142,9 +142,30 @@ The existing configuration file remains compatible:
     "haiku": "gpt-4.1-mini"
   },
   "upstreamHeaders": {
-    "HTTP-Referer": "https://example.com"
+    "HTTP-Referer": "https://example.com",
+    "User-Agent": "Claude-Adapter/2.0"
   }
 }
 ```
+
+To keep the secret out of `config.json`, configure only its environment variable name:
+
+```json
+{
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKeyEnv": "OPENAI_API_KEY",
+  "models": {
+    "opus": "gpt-4.1",
+    "sonnet": "gpt-4.1",
+    "haiku": "gpt-4.1-mini"
+  }
+}
+```
+
+Exactly one of `apiKey` and `apiKeyEnv` is required. Environment variable names must match
+`[A-Za-z_][A-Za-z0-9_]*`; the variable must exist and be non-empty when the wizard runs and whenever
+the adapter starts. The resolved value is never written back to configuration or logs.
+
+Configured upstream headers are forwarded unchanged. `Authorization`, `Accept`, `Content-Type`, `Content-Length`, and `Host` remain adapter-controlled and cannot be configured through the CLI.
 
 The CLI selects a native binary, waits for its ready record, and then updates Claude settings. The proxy chooses the requested port or the next available port atomically.
