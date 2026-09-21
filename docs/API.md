@@ -61,19 +61,11 @@ Image blocks, including images nested in `tool_result`, currently return `400`. 
   content: ContentBlock[];
   model: string;
   stop_reason: 'end_turn' | 'max_tokens' | 'tool_use' | 'refusal';
-  stop_details: { type: 'refusal'; category: null; explanation: string } | null;
-  stop_sequence: string | null;
-  container: null;
+  stop_details?: { type: 'refusal'; category: null; explanation: string };
+  stop_sequence: null;
   usage: {
-    input_tokens: number | null;
-    output_tokens: number | null;
-    cache_creation_input_tokens: null;
-    cache_read_input_tokens: null;
-    output_tokens_details: { thinking_tokens: number } | null;
-    server_tool_use: null;
-    cache_creation: null;
-    inference_geo: null;
-    service_tier: null;
+    input_tokens: number;
+    output_tokens: number;
   };
 }
 ```
@@ -91,9 +83,15 @@ Streaming uses SSE and preserves Anthropic event order:
 - `message_delta`
 - `message_stop`
 
-`message_start.message.usage` uses the Anthropic-compatible numeric placeholder `0` because final usage is not known yet. The final upstream usage chunk supplies the final values. If it is absent, final token counts remain `null` rather than fabricated zeroes; a real upstream zero remains `0`. Private third-party `reasoning` or `reasoning_content` is not exposed as text or Anthropic thinking and is never logged; only `completion_tokens_details.reasoning_tokens` is mapped to `output_tokens_details.thinking_tokens`. A reasoning-only result is an upstream protocol error. Malformed streamed tool arguments emit an Anthropic `error` event and do not emit successful `message_delta` or `message_stop` events.
+`message_start.message.usage` uses numeric zero placeholders. Final `message_delta.usage.output_tokens` defaults to zero; `input_tokens` is omitted if no token counters arrived. With counters, missing individual counters default to zero, matching main@8a19608. Non-streaming counters also default to zero. Raw upstream JSONL usage remains authoritative and distinguishes missing usage from actual zero. Cache and reasoning token breakdowns are retained in JSONL, not synthesized into client usage.
 
-Tool names may arrive in multiple upstream deltas. The adapter waits until the name is stable, then streams accumulated and subsequent argument fragments immediately; the complete arguments are still validated as a JSON object before successful termination. Upstream SSE error payloads are recognized before normal choice parsing and retained in error JSONL.
+Upstream `reasoning_content || reasoning` becomes `thinking` / `thinking_delta`, including reasoning-only completions. No cryptographic `signature` is fabricated. This preserves the established Claude Code adapter behavior, not native Anthropic signature integrity. Reasoning after the first tool is ignored as in main. Reasoning text is not written to usage/error logs.
+
+Every content block receives a consecutive, unique index; deltas for parallel tools route by their upstream index, regardless of arrival order. Text after tools is streamed immediately in a new block. Each block stops exactly once. Tool names are accumulated against the request's declared names: an exact match with no longer matching name starts immediately. Ambiguous names wait only for that tool until finish_reason or [DONE]. Missing IDs are generated at block start; unknown final names fail. Arguments are streamed unchanged, then validated as a complete JSON object before block closure; absent arguments mean `{}`.
+
+At finish_reason, content blocks close while the adapter continues reading final usage. `[DONE]`, or clean EOF following finish_reason, emits exactly one final message_delta/message_stop. An explicit `[DONE]` without finish_reason can infer end_turn/tool_use only for complete content. EOF without either terminal signal, malformed arguments, and transport errors emit `error` without successful final events. Empty choices are skipped; usage-only chunks are accepted. Content after finish_reason is an error.
+
+Parity exceptions: main's reused tool/text indices, fragmented tool names, missing block stops, and streaming `length` mapping are corrected. Existing explicit refusal handling and validation of malformed upstream payloads remain. Unknown finish reasons are errors. SSE framing uses eventsource-stream 0.2.3; output uses Axum Sse/Event, with demand-driven streaming and cancellation rather than automatic POST replay.
 
 ## `GET /health`
 

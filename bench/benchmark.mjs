@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import assert from 'node:assert/strict';
+import { readAnthropicStream } from './stream-validation.mjs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -10,10 +12,17 @@ const target = process.env.BENCH_TARGET ?? 'rust';
 const repetitions = Number(process.env.BENCH_REPETITIONS ?? 5);
 const upstreamDelayMs = Number(process.env.BENCH_UPSTREAM_DELAY_MS ?? 0);
 const concurrencies = [1, 10, 50, 100];
+const workload = process.env.BENCH_WORKLOAD ?? 'text';
+if (!['text', 'reasoning-tool'].includes(workload)) throw new Error('Unknown BENCH_WORKLOAD');
 const payload = {
   model: 'benchmark-model',
   max_tokens: 128,
-  messages: [{ role: 'user', content: 'Reply with benchmark.' }],
+  messages: [
+    { role: 'user', content: workload === 'text' ? 'Reply with benchmark.' : '__reasoning_tool__' },
+  ],
+  ...(workload === 'reasoning-tool'
+    ? { tools: [{ name: 'lookup', input_schema: { type: 'object' } }] }
+    : {}),
 };
 
 const mock = await startMockUpstream();
@@ -53,6 +62,7 @@ try {
         target,
         repetitions,
         upstreamDelayMs,
+        workload,
         results: outputResults,
       },
       null,
@@ -83,6 +93,11 @@ function summarize(results) {
         p95Ms: median('p95Ms'),
         p99Ms: median('p99Ms'),
         firstContentP50Ms: median('firstContentP50Ms'),
+        firstThinkingP50Ms: median('firstThinkingP50Ms'),
+        firstToolP50Ms: median('firstToolP50Ms'),
+        firstTextP50Ms: median('firstTextP50Ms'),
+        adapterPeakRssBytes:
+          Math.max(...samples.map((sample) => sample.adapterPeakRssBytes ?? 0)) || null,
         errors: samples.reduce((total, sample) => total + sample.errors, 0),
       };
     })
@@ -93,6 +108,22 @@ process.exit(0);
 async function runRequests(url, total, concurrency, streaming) {
   const latencies = [];
   const firstContent = [];
+  const thinkingLatencies = [];
+  const toolLatencies = [];
+  const textLatencies = [];
+  let peakRss = 0;
+  let sampling = false;
+  const sampleMemory = async () => {
+    if (sampling) return;
+    sampling = true;
+    try {
+      peakRss = Math.max(peakRss, (await adapterRss(adapter.pid)) ?? 0);
+    } finally {
+      sampling = false;
+    }
+  };
+  await sampleMemory();
+  const sampler = setInterval(sampleMemory, 1000);
   let next = 0;
   let errors = 0;
   let firstError = null;
@@ -109,21 +140,27 @@ async function runRequests(url, total, concurrency, streaming) {
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         if (streaming) {
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let text = '';
-          let found = false;
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            text += decoder.decode(value, { stream: true });
-            if (!found && text.includes('text_delta')) {
-              firstContent.push(performance.now() - requestStarted);
-              found = true;
+          const seen = new Set();
+          const result = await readAnthropicStream(response, (event) => {
+            const kind = event.delta?.type;
+            const samples = {
+              thinking_delta: thinkingLatencies,
+              input_json_delta: toolLatencies,
+              text_delta: textLatencies,
+            }[kind];
+            if (samples && !seen.has(kind)) {
+              const elapsed = performance.now() - requestStarted;
+              if (seen.size === 0) firstContent.push(elapsed);
+              seen.add(kind);
+              samples.push(elapsed);
             }
-          }
+          });
+          checkContent(result.blocks);
+          assert.equal(result.usage.input_tokens, 10);
         } else {
-          await response.arrayBuffer();
+          const body = await response.json();
+          checkContent(body.content);
+          assert.equal(body.usage.input_tokens, 10);
           firstContent.push(performance.now() - requestStarted);
         }
         latencies.push(performance.now() - requestStarted);
@@ -133,8 +170,13 @@ async function runRequests(url, total, concurrency, streaming) {
       }
     }
   });
-  await Promise.all(workers);
+  try {
+    await Promise.all(workers);
+  } finally {
+    clearInterval(sampler);
+  }
   const durationMs = performance.now() - started;
+  await sampleMemory();
   latencies.sort((left, right) => left - right);
   firstContent.sort((left, right) => left - right);
   return {
@@ -142,13 +184,56 @@ async function runRequests(url, total, concurrency, streaming) {
     errors,
     firstError,
     durationMs,
-    throughput: total / (durationMs / 1000),
+    throughput: (total - errors) / (durationMs / 1000),
     p50Ms: percentile(latencies, 0.5),
     p95Ms: percentile(latencies, 0.95),
     p99Ms: percentile(latencies, 0.99),
     firstContentP50Ms: percentile(firstContent, 0.5),
+    firstThinkingP50Ms: percentile(
+      thinkingLatencies.sort((a, b) => a - b),
+      0.5
+    ),
+    firstToolP50Ms: percentile(
+      toolLatencies.sort((a, b) => a - b),
+      0.5
+    ),
+    firstTextP50Ms: percentile(
+      textLatencies.sort((a, b) => a - b),
+      0.5
+    ),
+    adapterPeakRssBytes: peakRss || null,
     harnessRssBytes: process.memoryUsage().rss,
   };
+}
+
+function checkContent(blocks) {
+  if (workload === 'text') {
+    assert.equal(blocks.map((block) => block.text ?? '').join(''), 'benchmark');
+  } else {
+    assert.equal(blocks.map((block) => block.thinking ?? '').join(''), 'think');
+    const tool = blocks.find((block) => block.type === 'tool_use');
+    assert.equal(tool?.name, 'lookup');
+    assert.deepEqual(tool.input, { id: 1 });
+  }
+}
+
+async function adapterRss(pid) {
+  try {
+    const run = promisify(execFile);
+    if (process.platform === 'win32') {
+      const { stdout } = await run('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH']);
+      const value = stdout
+        .trim()
+        .split('","')
+        .at(-1)
+        ?.replace(/[^0-9]/g, '');
+      return value ? Number(value) * 1024 : null;
+    }
+    const { stdout } = await run('ps', ['-o', 'rss=', '-p', String(pid)]);
+    return Number(stdout.trim()) * 1024;
+  } catch {
+    return null;
+  }
 }
 
 async function verifyProtocolScenarios(url, mock) {
@@ -215,12 +300,14 @@ async function verifyProtocolScenarios(url, mock) {
     }),
   });
   const toolBody = await toolResponse.json();
-  if (!toolResponse.ok || toolBody.content.map((part) => part.type).join(',') !== 'tool_use') {
+  if (
+    !toolResponse.ok ||
+    toolBody.content.map((part) => part.type).join(',') !== 'thinking,tool_use'
+  ) {
     throw new Error('Reasoning/tool parity preflight failed');
   }
   const toolRequest = mock.requests.at(-1);
-  if (!toolRequest.tools?.length)
-    throw new Error('Tool request conversion preflight failed');
+  if (!toolRequest.tools?.length) throw new Error('Tool request conversion preflight failed');
   if (
     'strict' in toolRequest.tools[0].function ||
     'parallel_tool_calls' in toolRequest ||
@@ -290,13 +377,11 @@ async function verifyActiveStreamShutdown(adapter) {
       messages: [{ role: 'user', content: '__shutdown_stream__' }],
     }),
   });
-  const reader = response.body.getReader();
-  await reader.read();
-  const drain = (async () => {
-    while (!(await reader.read()).done) {}
-  })();
+  const drain = readAnthropicStream(response);
   await adapter.stop();
-  await drain;
+  const result = await drain;
+  assert.equal(result.blocks.map((block) => block.text ?? '').join(''), 'before shutdown');
+  assert.equal(result.stopReason, 'end_turn');
 }
 
 function percentile(values, percentileValue) {
@@ -360,6 +445,41 @@ async function startMockUpstream() {
         })}\n\n`
       );
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+      response.end('data: [DONE]\n\n');
+      return;
+    }
+    if (body.stream && body.messages.at(-1)?.content === '__reasoning_tool__') {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      for (const chunk of [
+        { choices: [{ delta: { reasoning_content: 'think' }, finish_reason: null }] },
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'call_bench',
+                    type: 'function',
+                    function: { name: 'lookup', arguments: '{"id":' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        },
+        {
+          choices: [
+            {
+              delta: { tool_calls: [{ index: 0, function: { arguments: '1}' } }] },
+              finish_reason: 'tool_calls',
+            },
+          ],
+        },
+        { choices: [], usage: { prompt_tokens: 10, completion_tokens: 3 } },
+      ])
+        response.write(`data: ${JSON.stringify(chunk)}\n\n`);
       response.end('data: [DONE]\n\n');
       return;
     }
@@ -472,11 +592,18 @@ async function startRustAdapter(baseUrl) {
     })
   );
   const child = spawn(
-    path.resolve('native/target/release/claude-adapter-native'),
+    path.resolve(
+      process.env.BENCH_BINARY ??
+        `native/target/release/claude-adapter-native${process.platform === 'win32' ? '.exe' : ''}`
+    ),
     ['--config', config, '--port', '0'],
     {
-      stdio: ['ignore', 'pipe', process.env.BENCH_DEBUG ? 'inherit' : 'ignore'],
-      env: { ...process.env, CLAUDE_ADAPTER_BENCH_API_KEY: 'benchmark' },
+      stdio: ['pipe', 'pipe', process.env.BENCH_DEBUG ? 'inherit' : 'ignore'],
+      env: {
+        ...process.env,
+        CLAUDE_ADAPTER_BENCH_API_KEY: 'benchmark',
+        CLAUDE_ADAPTER_STDIN_SHUTDOWN: '1',
+      },
     }
   );
   const url = await new Promise((resolveReady, reject) => {
@@ -492,11 +619,13 @@ async function startRustAdapter(baseUrl) {
   let stopped = false;
   return {
     url,
+    pid: child.pid,
     stop: async () => {
       if (stopped) return;
       stopped = true;
-      child.kill('SIGTERM');
-      await new Promise((resolveExit) => child.once('exit', resolveExit));
+      const exited = new Promise((resolveExit) => child.once('exit', resolveExit));
+      child.stdin.end();
+      await exited;
       await rm(directory, { recursive: true, force: true });
     },
   };
@@ -505,29 +634,46 @@ async function startRustAdapter(baseUrl) {
 async function startNodeAdapter(baseUrl) {
   const dist = process.env.BENCH_NODE_DIST;
   if (!dist) throw new Error('BENCH_NODE_DIST is required for BENCH_TARGET=node');
-  const require = createRequire(import.meta.url);
-  const { createServer, findAvailablePort } = require(path.join(dist, 'server', 'index.js'));
-  const originalLog = console.log;
-  console.log = () => {};
-  const server = createServer({
-    baseUrl,
-    apiKey: 'benchmark',
-    models: { opus: 'benchmark-model', sonnet: 'benchmark-model', haiku: 'benchmark-model' },
-  });
-  try {
-    const port = await findAvailablePort(0);
-    const url = await server.start(port);
-    return {
-      url,
-      stop: async () => {
-        await server.stop();
-        console.log = originalLog;
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
+    import { createRequire } from 'node:module';
+    const require = createRequire(import.meta.url);
+    const { createServer, findAvailablePort } = require(process.env.BENCH_NODE_ENTRY);
+    console.log = () => {};
+    const server = createServer({ baseUrl: process.env.BENCH_BASE_URL, apiKey: 'benchmark' });
+    const url = await server.start(await findAvailablePort(0));
+    process.stdout.write(JSON.stringify({url}) + '\\n');
+    process.stdin.resume();
+    process.stdin.on('end', async () => { await server.stop(); process.exit(0); });
+  `,
+    ],
+    {
+      stdio: ['pipe', 'pipe', 'ignore'],
+      env: {
+        ...process.env,
+        BENCH_NODE_ENTRY: path.resolve(dist, 'server', 'index.js'),
+        BENCH_BASE_URL: baseUrl,
       },
-    };
-  } catch (error) {
-    console.log = originalLog;
-    throw error;
-  }
+    }
+  );
+  const url = await new Promise((resolveReady, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code) => reject(new Error(`Node adapter exited before ready: ${code}`)));
+    child.stdout.once('data', (data) => resolveReady(JSON.parse(data.toString().trim()).url));
+  });
+  return {
+    url,
+    pid: child.pid,
+    stop: async () => {
+      const exited = new Promise((resolveExit) => child.once('exit', resolveExit));
+      child.stdin.end();
+      await exited;
+    },
+  };
 }
 
 function listen(server) {

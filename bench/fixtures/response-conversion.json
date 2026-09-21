@@ -6,32 +6,34 @@
       "id": "chatcmpl_1",
       "choices": [
         {
-          "message": { "role": "assistant", "content": "answer" },
+          "message": {
+            "role": "assistant",
+            "content": "answer"
+          },
           "finish_reason": "stop"
         }
       ],
-      "usage": { "prompt_tokens": 5, "completion_tokens": 2 }
+      "usage": {
+        "prompt_tokens": 5,
+        "completion_tokens": 2
+      }
     },
     "expected": {
       "id": "msg_chatcmpl_1",
       "type": "message",
       "role": "assistant",
-      "content": [{ "type": "text", "text": "answer" }],
+      "content": [
+        {
+          "type": "text",
+          "text": "answer"
+        }
+      ],
       "model": "claude-sonnet",
       "stop_reason": "end_turn",
-      "stop_details": null,
       "stop_sequence": null,
-      "container": null,
       "usage": {
         "input_tokens": 5,
-        "output_tokens": 2,
-        "cache_creation_input_tokens": null,
-        "cache_read_input_tokens": null,
-        "output_tokens_details": null,
-        "server_tool_use": null,
-        "cache_creation": null,
-        "inference_geo": null,
-        "service_tier": null
+        "output_tokens": 2
       }
     }
   },
@@ -50,14 +52,20 @@
               {
                 "id": "toolu_1",
                 "type": "function",
-                "function": { "name": "lookup", "arguments": "{\"id\":1}" }
+                "function": {
+                  "name": "lookup",
+                  "arguments": "{\"id\":1}"
+                }
               }
             ]
           },
           "finish_reason": "tool_calls"
         }
       ],
-      "usage": { "prompt_tokens": 7, "completion_tokens": 3 }
+      "usage": {
+        "prompt_tokens": 7,
+        "completion_tokens": 3
+      }
     },
     "expected": {
       "id": "msg_chatcmpl_2",
@@ -65,27 +73,24 @@
       "role": "assistant",
       "content": [
         {
+          "type": "thinking",
+          "thinking": "think"
+        },
+        {
           "type": "tool_use",
           "id": "toolu_1",
           "name": "lookup",
-          "input": { "id": 1 }
+          "input": {
+            "id": 1
+          }
         }
       ],
       "model": "claude-opus",
       "stop_reason": "tool_use",
-      "stop_details": null,
       "stop_sequence": null,
-      "container": null,
       "usage": {
         "input_tokens": 7,
-        "output_tokens": 3,
-        "cache_creation_input_tokens": null,
-        "cache_read_input_tokens": null,
-        "output_tokens_details": null,
-        "server_tool_use": null,
-        "cache_creation": null,
-        "inference_geo": null,
-        "service_tier": null
+        "output_tokens": 3
       }
     }
   }

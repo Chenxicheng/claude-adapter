@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "tests": {
+    "upstream": {
+      "passed": true,
+      "status": 200,
+      "responseModel": "qwen/qwen3.6-35b-a3b",
+      "finishReason": "stop",
+      "contentMatched": true,
+      "reasoningTokens": 198,
+      "inputTokens": 16,
+      "outputTokens": 204,
+      "errorType": null
+    },
+    "adapter": {
+      "passed": true,
+      "status": 200,
+      "eventTypes": [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop"
+      ],
+      "deltaTypes": [
+        "thinking_delta",
+        "text_delta"
+      ],
+      "firstContentType": "thinking_delta",
+      "thinkingObserved": true,
+      "contentMatched": true,
+      "stopReason": "end_turn",
+      "inputTokens": 20,
+      "outputTokens": 188
+    },
+    "health": {
+      "passed": true,
+      "status": 200
+    },
+    "claudeText": {
+      "passed": false,
+      "exitCode": 0,
+      "expectedContentObserved": true,
+      "thinkingObserved": false,
+      "toolObserved": false,
+      "eventTypes": [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop"
+      ]
+    }
+  },
+  "model": "qwen/qwen3.6-35b-a3b",
+  "passed": false
+}

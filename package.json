@@ -1,6 +1,6 @@
 {
   "name": "claude-adapter",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Proxy to convert Anthropic API requests to OpenAI format for Claude Code",
   "bin": {
     "claude-adapter": "dist/cli.js"
@@ -18,7 +18,8 @@
     "lint:native": "cargo fmt --manifest-path native/Cargo.toml --check && cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings",
     "obfuscate:dist": "node scripts/obfuscate-dist.mjs",
     "release:assets": "node scripts/build-release-assets.mjs",
-    "prepublishOnly": "npm test -- --runInBand && npm run test:native && npm run lint && npm run lint:native && npm run build:release"
+    "prepublishOnly": "npm test -- --runInBand && npm run test:native && npm run lint && npm run lint:native && npm run build:release",
+    "test:protocol": "node tests/protocol-parity.mjs"
   },
   "files": [
     "dist",
@@ -63,6 +64,7 @@
     "inquirer"
   ],
   "devDependencies": {
+    "@anthropic-ai/sdk": "0.71.2",
     "@types/inquirer": "^9.0.7",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.10.2",

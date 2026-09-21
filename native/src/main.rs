@@ -184,6 +184,17 @@ async fn handle_messages(
             state.config.base_url.clone(),
             state.storage.clone(),
             request_id.to_owned(),
+            openai
+                .get("tools")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|tool| {
+                    tool.pointer("/function/name")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect(),
         );
         let response = Response::builder()
             .status(StatusCode::OK)

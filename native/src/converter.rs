@@ -780,11 +780,10 @@ pub fn convert_response(response: &Value, original_model: &str) -> Result<Value,
         ));
     }
     let mut content = Vec::new();
-    let reasoning = message
-        .get("reasoning_content")
-        .or_else(|| message.get("reasoning"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let reasoning = reasoning_content(&choice["message"]);
+    if !reasoning.is_empty() {
+        content.push(json!({"type": "thinking", "thinking": reasoning}));
+    }
     if let Some(text) = message
         .get("content")
         .and_then(Value::as_str)
@@ -821,7 +820,12 @@ pub fn convert_response(response: &Value, original_model: &str) -> Result<Value,
                 .ok_or_else(|| {
                     upstream_protocol_error("tool call is missing function.arguments")
                 })?;
-            let input: Value = serde_json::from_str(arguments).map_err(|error| {
+            let input: Value = serde_json::from_str(if arguments.is_empty() {
+                "{}"
+            } else {
+                arguments
+            })
+            .map_err(|error| {
                 upstream_protocol_error(format!("tool arguments are invalid JSON: {error}"))
             })?;
             if !input.is_object() {
@@ -871,11 +875,6 @@ pub fn convert_response(response: &Value, original_model: &str) -> Result<Value,
     if filtered && content.is_empty() {
         content.push(json!({"type": "text", "text": refusal_explanation}));
     }
-    if !reasoning.is_empty() && content.is_empty() {
-        return Err(upstream_protocol_error(
-            "upstream response contained reasoning but no user-visible content",
-        ));
-    }
     let is_refusal = filtered || refusal.is_some();
     let stop_reason = if is_refusal { "refusal" } else { mapped_finish };
     let stop_details = if is_refusal {
@@ -889,18 +888,23 @@ pub fn convert_response(response: &Value, original_model: &str) -> Result<Value,
         None | Some(Value::Null) | Some(Value::String(_)) => generated_message_id(),
         Some(_) => return Err(upstream_protocol_error("response id must be a string")),
     };
-    Ok(json!({
-        "id": id,
-        "type": "message",
-        "role": "assistant",
-        "content": content,
-        "model": original_model,
-        "stop_reason": stop_reason,
-        "stop_details": stop_details,
-        "stop_sequence": Value::Null,
-        "container": Value::Null,
+    let mut result = json!({
+        "id": id, "type": "message", "role": "assistant", "content": content,
+        "model": original_model, "stop_reason": stop_reason, "stop_sequence": Value::Null,
         "usage": usage
-    }))
+    });
+    if is_refusal {
+        result["stop_details"] = stop_details;
+    }
+    Ok(result)
+}
+
+pub(crate) fn reasoning_content(message: &Value) -> &str {
+    ["reasoning_content", "reasoning"]
+        .into_iter()
+        .filter_map(|field| message.get(field).and_then(Value::as_str))
+        .find(|text| !text.is_empty())
+        .unwrap_or("")
 }
 
 pub(crate) fn map_finish_reason(reason: &str) -> Result<&'static str, AppError> {
@@ -926,42 +930,15 @@ fn response_usage(usage: Option<&Value>) -> Result<Value, AppError> {
     };
     let token = |field: &str| -> Result<Value, AppError> {
         match usage.and_then(|usage| usage.get(field)) {
-            None | Some(Value::Null) => Ok(Value::Null),
+            None | Some(Value::Null) => Ok(json!(0)),
             Some(value) => value.as_u64().map(Value::from).ok_or_else(|| {
                 upstream_protocol_error(format!("response usage.{field} must be an integer"))
             }),
         }
     };
-    let details = match usage.and_then(|usage| usage.get("completion_tokens_details")) {
-        None | Some(Value::Null) => None,
-        Some(Value::Object(details)) => Some(details),
-        Some(_) => {
-            return Err(upstream_protocol_error(
-                "response usage.completion_tokens_details must be an object or null",
-            ));
-        }
-    };
-    let thinking = match details.and_then(|details| details.get("reasoning_tokens")) {
-        None | Some(Value::Null) => Value::Null,
-        Some(value) => value
-            .as_u64()
-            .map(|tokens| json!({"thinking_tokens": tokens}))
-            .ok_or_else(|| {
-                upstream_protocol_error(
-                    "response usage.completion_tokens_details.reasoning_tokens must be an integer",
-                )
-            })?,
-    };
     Ok(json!({
         "input_tokens": token("prompt_tokens")?,
         "output_tokens": token("completion_tokens")?,
-        "cache_creation_input_tokens": Value::Null,
-        "cache_read_input_tokens": Value::Null,
-        "output_tokens_details": thinking,
-        "server_tool_use": Value::Null,
-        "cache_creation": Value::Null,
-        "inference_geo": Value::Null,
-        "service_tier": Value::Null,
     }))
 }
 
@@ -1329,10 +1306,7 @@ mod tests {
             assert_eq!(converted["container"], Value::Null);
             assert_eq!(converted["usage"]["input_tokens"], 11);
             assert_eq!(converted["usage"]["output_tokens"], 7);
-            assert_eq!(
-                converted["usage"]["output_tokens_details"]["thinking_tokens"],
-                3
-            );
+            assert!(converted["usage"].get("output_tokens_details").is_none());
             assert_eq!(converted["usage"]["cache_read_input_tokens"], Value::Null);
         }
     }
@@ -1370,12 +1344,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_reasoning_only_and_malformed_tool_calls() {
+    fn rejects_malformed_tool_calls() {
         for response in [
-            json!({
-                "id": "chatcmpl_1",
-                "choices": [{"message": {"role": "assistant", "reasoning_content": "private"}, "finish_reason": "stop"}]
-            }),
             json!({
                 "id": "chatcmpl_2",
                 "choices": [{"message": {"role": "assistant", "tool_calls": [{
@@ -1420,8 +1390,8 @@ mod tests {
         let second = convert_response(&response, "model").unwrap();
         assert!(first["id"].as_str().unwrap().starts_with("msg_"));
         assert_ne!(first["id"], second["id"]);
-        assert_eq!(first["usage"]["input_tokens"], Value::Null);
-        assert_eq!(first["usage"]["output_tokens"], Value::Null);
+        assert_eq!(first["usage"]["input_tokens"], 0);
+        assert_eq!(first["usage"]["output_tokens"], 0);
 
         let zero = json!({
             "id": "chatcmpl_1",

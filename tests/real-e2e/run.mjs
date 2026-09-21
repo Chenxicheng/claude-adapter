@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readAnthropicStream } from '../../bench/stream-validation.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -14,6 +15,7 @@ const binary = path.resolve(
 );
 const resultsDir = path.resolve(args['results-dir'] ?? path.join(currentDirectory, 'results'));
 const withClaude = args['with-claude'] === true;
+const requireThinking = args['require-thinking'] === true;
 const startedAt = new Date();
 const result = {
   schemaVersion: 1,
@@ -92,7 +94,7 @@ function parseArgs(values) {
     const value = values[index];
     if (!value.startsWith('--')) throw new Error(`Unexpected argument: ${value}`);
     const name = value.slice(2);
-    if (name === 'with-claude') parsed[name] = true;
+    if (name === 'with-claude' || name === 'require-thinking') parsed[name] = true;
     else parsed[name] = values[++index];
   }
   return parsed;
@@ -212,7 +214,8 @@ async function testAdapter(url, model) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       model,
-      max_tokens: 256,
+      max_tokens: requireThinking ? 2048 : 256,
+      ...(requireThinking ? { thinking: { type: 'enabled', budget_tokens: 1024 } } : {}),
       temperature: 0,
       stream: true,
       messages: [{ role: 'user', content: 'Reply with exactly ADAPTER_406_FIXED' }],
@@ -224,26 +227,29 @@ async function testAdapter(url, model) {
     }),
     signal: AbortSignal.timeout(180_000),
   });
-  const stream = await response.text();
-  const events = stream
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith('data: '))
-    .map((line) => line.slice(6))
-    .filter((line) => line !== '[DONE]')
-    .map((line) => JSON.parse(line));
-  const text = events.map((event) => event.delta?.text ?? '').join('');
-  const errors = events.filter((event) => event.type === 'error');
+  const eventTypes = new Set();
+  const deltaTypes = new Set();
+  let firstContentType = null;
+  const result = await readAnthropicStream(response, (event) => {
+    eventTypes.add(event.type);
+    if (event.delta?.type) {
+      deltaTypes.add(event.delta.type);
+      firstContentType ??= event.delta.type;
+    }
+  });
+  const text = result.blocks.map((block) => block.text ?? '').join('');
+  const thinkingObserved = deltaTypes.has('thinking_delta');
   return {
-    passed:
-      response.ok &&
-      text === 'ADAPTER_406_FIXED' &&
-      errors.length === 0 &&
-      events.at(-1)?.type === 'message_stop',
+    passed: text === 'ADAPTER_406_FIXED' && (!requireThinking || thinkingObserved),
     status: response.status,
-    eventTypes: [...new Set(events.map((event) => event.type))],
+    eventTypes: [...eventTypes],
+    deltaTypes: [...deltaTypes],
+    firstContentType,
+    thinkingObserved,
     contentMatched: text === 'ADAPTER_406_FIXED',
-    stopReason: events.find((event) => event.type === 'message_delta')?.delta?.stop_reason ?? null,
-    errorTypes: errors.map((event) => event.error?.type ?? 'unknown'),
+    stopReason: result.stopReason,
+    inputTokens: result.usage.input_tokens ?? null,
+    outputTokens: result.usage.output_tokens,
   };
 }
 
@@ -270,7 +276,9 @@ async function testClaude(adapterUrl, model, directory, toolTest) {
     '--output-format',
     'stream-json',
     '--verbose',
+    '--include-partial-messages',
   ];
+  if (requireThinking) command.push('--effort', 'high');
   if (toolTest) command.push('--allowedTools', 'Read');
   const execution = await runCommand('claude', command, {
     cwd: directory,
@@ -283,10 +291,40 @@ async function testClaude(adapterUrl, model, directory, toolTest) {
       ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
     },
   });
+  const messages = execution.stdout
+    .split('\n')
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line)];
+      } catch {
+        return [];
+      }
+    });
+  const events = messages
+    .filter((message) => message.type === 'stream_event')
+    .map((message) => message.event);
+  const thinkingObserved = events.some((event) => event.delta?.type === 'thinking_delta');
+  const toolObserved = events.some(
+    (event) => event.content_block?.type === 'tool_use' && event.content_block.name === 'Read'
+  );
+  const expectedContentObserved = messages.some(
+    (message) =>
+      message.type === 'result' &&
+      typeof message.result === 'string' &&
+      message.result.includes(expected)
+  );
   return {
-    passed: execution.code === 0 && execution.stdout.includes(expected),
+    passed:
+      execution.code === 0 &&
+      expectedContentObserved &&
+      (!requireThinking || thinkingObserved) &&
+      (!toolTest || toolObserved),
     exitCode: execution.code,
-    expectedContentObserved: execution.stdout.includes(expected),
+    expectedContentObserved,
+    thinkingObserved,
+    toolObserved,
+    eventTypes: [...new Set(events.map((event) => event.type))],
   };
 }
 

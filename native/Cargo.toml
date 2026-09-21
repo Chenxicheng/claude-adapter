@@ -1,6 +1,6 @@
 [package]
 name = "claude-adapter-native"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 rust-version = "1.98"
 
@@ -9,6 +9,7 @@ async-stream = "0.3"
 axum = "0.8.4"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+eventsource-stream = "=0.2.3"
 futures-util = "0.3"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

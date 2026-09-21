@@ -28,7 +28,7 @@ Run against the ignored Spring local configuration:
 node tests/real-e2e/run.mjs \
   --spring-config /absolute/path/to/spring-ai-test/src/main/resources/application-local.yaml \
   --upstream-root http://127.0.0.1:1234 \
-  --with-claude
+  --with-claude --require-thinking
 ```
 
 `--upstream-root` overrides only the server address. The API key, completions path, and model still
@@ -38,3 +38,5 @@ adapter wire paths need verification.
 The runner creates a mode-`0600` temporary adapter config, removes it on exit, and stops the native
 process gracefully. Keep failed result files: they are the evidence needed to compare a provider
 rejection with `upstreamRequestShape` in the adapter error JSONL.
+
+`--require-thinking` explicitly enables thinking for the adapter probe and requires thinking deltas in both adapter and Claude Code partial events. Read acceptance requires an actual Read tool event and the final result, not a marker echoed in the prompt. Providers without exposed reasoning fail this optional acceptance rather than silently passing. Results retain only event/type flags and token totals.

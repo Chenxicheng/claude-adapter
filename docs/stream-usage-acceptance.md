@@ -1,136 +1,60 @@
-# Stream Usage Acceptance
+# Response and stream acceptance
 
-## Background
+## Contract and layout
 
-OpenAI-compatible streaming responses return complete usage data in a final usage chunk when `stream_options.include_usage` is enabled. Claude-style SSE sends `message_start` before content begins, so this adapter uses the Anthropic-compatible numeric placeholder `0` until the final OpenAI usage chunk arrives.
+`main@8a19608` is the normal-path oracle. `tests/protocol-parity.mjs` loads its converters from Git in memory and compares complete events after normalizing generated message IDs. It also consumes the same streams using Anthropic SDK 0.71.2 final snapshots; convenience callbacks are not the oracle for interleaved blocks. `bench/stream-validation.mjs` validates lifecycle, block identity, tool JSON, usage and termination for both acceptance and benchmarks. Fixtures remain under `bench/fixtures/`; sanitized real-upstream evidence remains under `tests/real-e2e/results/`.
 
-This acceptance check verifies that the final `message_delta.usage` carries the completed token counts without delaying the stream start or changing unrelated request, response, or tool-call behavior. `message_start.message.usage` is a Claude API compatibility placeholder in this adapter and must not be treated as recorded usage or cost data.
+Rules live in [API.md](API.md) and [rust-migration.md](rust-migration.md). Thinking is forwarded, not logged or signed. Non-streaming usage has numeric input/output totals. Stream starts use zero placeholders; final output defaults to zero and input is omitted without counters. Do not subtract cached or reasoning tokens from full upstream totals; retain raw usage and missing-final-chunk status in JSONL.
 
-Official references:
+Explicit exceptions to main are unique content indices, complete fragmented names, paired block stops, truncated-EOF errors, malformed tool JSON rejection and `length -> max_tokens`. Request-side image rejection and existing refusal/unknown-reason validation remain. No alternative protocol modes or Node fallback are added.
 
-- Claude streaming messages: https://platform.claude.com/docs/en/build-with-claude/streaming
-- OpenAI chat completion streaming events: https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events/
+## Deterministic checks
 
-## Usage Mapping
+- Rust barrier tests send a single thinking/text/tool increment then wait for a signal. Downstream must receive the increment before releasing upstream. This proves progress without flaky timing assumptions.
+- Test CR, LF, CRLF, byte-split UTF-8, reasoning alias fallback, reasoning-only output, parallel and out-of-order tool indices, fragmented/ambiguous names, no-argument tools, text after tools and final usage.
+- Check explicit [DONE] without finish_reason, EOF after finish_reason, truncated EOF, malformed arguments, undeclared names and upstream errors. Failure never fabricates successful message_stop.
+- Benchmark preflights verify slow-reader backpressure, client-disconnect cancellation and active-stream shutdown. HTTP 200 without valid content and message_stop is a failure.
 
-| OpenAI final usage field | Anthropic usage field |
-| ------------------------ | --------------------- |
-| `prompt_tokens`          | `input_tokens`        |
-| `completion_tokens`      | `output_tokens`       |
-| `completion_tokens_details.reasoning_tokens` | `output_tokens_details.thinking_tokens` |
-
-`prompt_tokens_details.cached_tokens` is not mapped to Anthropic response usage
-for the OpenAI Chat Completions path. It remains available in raw upstream usage
-records for cache-hit and cost analysis.
-
-## Acceptance Goals
-
-- Native stream maps upstream prompt usage to full input context semantics:
-  `input_tokens = prompt_tokens`.
-- OpenAI `prompt_tokens_details.cached_tokens` must not be subtracted from
-  `input_tokens` or exposed as Anthropic `cache_read_input_tokens`, because this
-  adapter prioritizes Claude Code context-window safety over cache billing
-  display compatibility.
-- Native OpenAI Chat Completions usage does not include Anthropic cache token
-  semantics, so `cache_creation_input_tokens` and `cache_read_input_tokens`
-  are `null`; the adapter must not infer either value from OpenAI usage.
-- OpenAI `completion_tokens_details.reasoning_tokens` is a breakdown within
-  `completion_tokens`; it must not be subtracted from Anthropic `output_tokens`.
-- If no upstream usage chunk arrives, final `message_delta.usage.input_tokens` is `null`, not a synthetic zero.
-- If the final upstream usage chunk reports `prompt_tokens: 0`, final `message_delta.usage` must preserve the real `input_tokens: 0`.
-- `message_start` remains the first event and is not delayed waiting for final usage.
-- `message_start.message.usage` remains a zero-valued transport compatibility placeholder and is not recorded.
-- Streaming usage is recorded once at stream end with `usageStatus: "complete"` or `usageStatus: "missing_final_chunk"`.
-- SSE event order remains unchanged.
-- Text streaming and tool calls retain Anthropic event order. Streaming and non-streaming responses use the same finish-reason mapping.
-
-## Non-Goals
-
-- Do not estimate tokens locally with a tokenizer.
-- Do not add a new public route or Responses API surface.
-- Do not call a real upstream API or use a real API key.
-- Do not refactor unrelated code.
-
-## Functional Check
-
-Use mock stream chunks with final OpenAI-compatible usage:
-
-```json
-{
-  "prompt_tokens": 20,
-  "completion_tokens": 10,
-  "prompt_tokens_details": {
-    "cached_tokens": 8
-  }
-}
-```
-
-Native stream must satisfy:
-
-- `message_delta.usage.input_tokens === 20`
-- `message_delta.usage.output_tokens === 10`
-- `message_delta.usage.cache_read_input_tokens === null`
-- `message_start` is still the first event
-
-OpenAI completion usage breakdown must not reduce Anthropic output tokens:
-
-```json
-{
-  "prompt_tokens": 120,
-  "completion_tokens": 12,
-  "prompt_tokens_details": {
-    "cached_tokens": 80
-  },
-  "completion_tokens_details": {
-    "reasoning_tokens": 7
-  }
-}
-```
-
-Native stream must then satisfy:
-
-- `message_delta.usage.input_tokens === 120`
-- `message_delta.usage.output_tokens === 12`
-- `message_delta.usage.cache_read_input_tokens === null`
-- `message_delta.usage.cache_creation_input_tokens === null`
-- `message_delta.usage.output_tokens_details.thinking_tokens === 7`
-
-Native stream must set `message_delta.usage.input_tokens` to `null` when no upstream usage chunk arrives, while preserving a real upstream `prompt_tokens: 0`.
-
-Usage recording must satisfy:
-
-- Non-stream responses record `usageStatus: "complete"` with real usage fields.
-- Stream responses record usage only once, after the stream ends.
-- Stream responses with final usage record `usageStatus: "complete"` with real usage fields.
-- Stream responses without final usage record `usageStatus: "missing_final_chunk"` and omit unknown token fields.
-- OpenAI usage records must not include `cacheCreationInputTokens`; native Chat Completions usage does not report cache creation tokens.
-- Raw OpenAI usage records must preserve `prompt_tokens_details.cached_tokens`
-  when upstream provides it.
-- `message_start.message.usage` placeholder values are never persisted as token usage.
-
-Reasoning privacy and integrity must satisfy:
-
-- Upstream `reasoning` and `reasoning_content` text is neither displayed nor recorded.
-- No `thinking`, `thinking_delta`, `signature`, or `signature_delta` is synthesized.
-- A reasoning-only response produces an upstream protocol error.
-- Streamed tool arguments must form one complete JSON object; malformed or scalar arguments produce an `error` SSE event without a successful `message_delta` or `message_stop`.
-
-## Verification Commands
-
-```bash
-cargo test --manifest-path native/Cargo.toml stream::tests -- --nocapture
-cargo test --manifest-path native/Cargo.toml converter::tests -- --nocapture
-npm run build
+```sh
+cargo test --manifest-path native/Cargo.toml
+cargo build --manifest-path native/Cargo.toml --release
+npm run test:protocol
+npm test -- --runInBand
 npm run lint
+npm run build
+cargo fmt --manifest-path native/Cargo.toml --check
 cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+git diff --check
 ```
 
-## Review Checklist
+`npm run test:protocol` requires the fixed Git object (CI checks out full history) and the release binary. `ADAPTER_BINARY` can select a platform build. Native-platform CI runs it on Linux x64 and Windows x64; a local macOS pass is not proof of either target.
 
-- Diff stays focused on native request conversion, usage completion, tests, and documentation.
-- Stream first event is still not delayed.
-- Native stream exposes final usage consistently.
-- Non-stream and stream conversion omit upstream reasoning text while preserving its token breakdown.
-- Usage records distinguish complete usage from a missing final usage chunk.
-- Third-party reasoning traces are never exposed or logged.
-- No secrets, real network calls, or compatibility branches are introduced.
+## Performance comparison
+
+Use identical machine, payload, logging and release mode. Run targets sequentially with concurrency 1/10/50/100, five repetitions, warm-up, and upstream delays 0 and 100 ms. Keep baseline binaries outside the repository. Never treat dropped thinking as an optimization.
+
+```sh
+BENCH_SUMMARY=1 BENCH_UPSTREAM_DELAY_MS=0 node bench/benchmark.mjs
+BENCH_SUMMARY=1 BENCH_UPSTREAM_DELAY_MS=100 node bench/benchmark.mjs
+BENCH_WORKLOAD=reasoning-tool BENCH_SUMMARY=1 node bench/benchmark.mjs
+BENCH_TARGET=rust-before BENCH_BINARY=/absolute/path/to/baseline node bench/benchmark.mjs
+BENCH_TARGET=node BENCH_NODE_DIST=/absolute/path/to/main/dist node bench/benchmark.mjs
+```
+
+`BENCH_WORKLOAD` is text (default) or reasoning-tool; run both delays for the latter too. Old Rust is compared only on text because it deliberately omitted reasoning. `rust-before` skips new-behavior preflights, but measured responses still undergo lifecycle/content checks. TS runs as a separate process. Record first thinking/tool/text and overall first-content latency, throughput, p50/p95/p99 and sampled adapter RSS. `harnessRssBytes` is explicitly separate. RSS sampling is a process high-water observation, not per-request allocation profiling; unavailable measurements are null.
+
+Recheck throughput decreases over 10% or p95 increases over max(10%, 1 ms), then diagnose repeatable regressions. Parser microbenchmarks and end-to-end latency must not be conflated. The memory check for long streams must distinguish retained active tool arguments (needed for validation) from unbounded accumulation of already-forwarded text.
+
+## Real upstream
+
+Run the manual harness described in [tests/real-e2e/README.md](../tests/real-e2e/README.md) with external credentials. Verify actual thinking, tool execution and final answer in Claude Code. If the provider sends no reasoning, record that limitation; a mock pass must not be labeled a real-provider thinking pass. Committed results contain only sanitized status/model/event/token summaries, never credentials, prompts or responses.
+
+## Recorded acceptance: 2026-09-21
+
+On macOS arm64, 42 Rust tests, 91 Jest tests and 19 protocol/SDK cases passed. The real Qwen run received thinking as its first content delta; Claude Code emitted thinking events, executed Read and returned the expected final answer. See the [sanitized result](../tests/real-e2e/results/20260921T125117Z-qwen-qwen3.6-35b-a3b.json). This checks Claude Code's stream output, not a visual terminal screenshot. The earlier failed connection attempt is recorded separately.
+
+The [performance artifact](../bench/response-parity-2026-09-21.json) contains all ten five-repetition matrices and binary hashes. All measured responses passed validation. All 16 text comparisons against pre-fix Rust passed the throughput/p95 gates. At zero upstream delay, streaming throughput changed by +1.6% to +4.4%; these small differences do not establish a significant speedup. Thinking/tool streaming throughput was 0.97–1.12 times main TS at zero delay and 0.96–1.01 times at 100 ms. These are local mock measurements, not model inference acceleration.
+
+A separate single-request memory probe forwarded 16 MiB and then 64 MiB of text in 64 KiB upstream deltas, discarded client output after checking successful termination, and sampled only the adapter process every 25 ms. Sampled peak RSS was 11,370,496 and 12,337,152 bytes respectively (growth 966,656 bytes); this supports bounded text retention for this workload, not a universal allocation bound. Benchmark preflights also passed slow-reader, disconnect and graceful-shutdown checks.
+
+Linux x64 and Windows x64 build/protocol checks are wired into CI but were not executed in this macOS-only validation environment. Those platform results remain pending; no release or push was performed.
