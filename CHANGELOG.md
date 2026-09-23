@@ -25,6 +25,7 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 - Accept repeated identical tool names while streaming their arguments; continue rejecting a changed name.
 - Accept content-free choice tails and final usage after `finish_reason` without repeating downstream termination.
+- Bound streaming waits for upstream headers, first body bytes, first Anthropic event and later body idle periods; fail timed-out streams without a false successful termination.
 
 ### Changed
 

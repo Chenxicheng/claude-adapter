@@ -7,6 +7,7 @@ mod stream;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
+    future::Future,
     io::{self, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -34,6 +35,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_IN_FLIGHT: usize = 128;
+const STREAM_RESPONSE_HEADERS_TIMEOUT: Duration = Duration::from_secs(120);
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
@@ -166,13 +168,19 @@ async fn handle_messages(
     let streaming = anthropic.get("stream").and_then(Value::as_bool) == Some(true);
     eprintln!("-> {model} [sent] {request_id}");
     let openai = convert_request(anthropic, &state.config.base_url)?;
-    let response = state
+    let request = state
         .client
         .post(state.config.chat_completions_url())
-        .json(&openai)
-        .send()
-        .await
-        .map_err(|error| AppError::new(StatusCode::BAD_GATEWAY, error.to_string()))?;
+        .json(&openai);
+    let response = if streaming {
+        await_upstream_headers(request.send(), STREAM_RESPONSE_HEADERS_TIMEOUT).await?
+    } else {
+        request
+            .send()
+            .await
+            .map_err(|error| AppError::new(StatusCode::BAD_GATEWAY, error.to_string()))?
+    };
+    let headers_received_at = tokio::time::Instant::now();
     if !response.status().is_success() {
         return Err(upstream_error(response, &openai).await);
     }
@@ -184,6 +192,7 @@ async fn handle_messages(
             state.config.base_url.clone(),
             state.storage.clone(),
             request_id.to_owned(),
+            headers_received_at,
             openai
                 .get("tools")
                 .and_then(Value::as_array)
@@ -233,6 +242,24 @@ async fn handle_messages(
     }
     eprintln!("<- {model} [received] {request_id}");
     Ok(Json(converted).into_response())
+}
+
+async fn await_upstream_headers<F>(
+    response: F,
+    timeout: Duration,
+) -> Result<reqwest::Response, AppError>
+where
+    F: Future<Output = reqwest::Result<reqwest::Response>>,
+{
+    tokio::time::timeout(timeout, response)
+        .await
+        .map_err(|_| {
+            AppError::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                "Upstream timed out waiting for response headers",
+            )
+        })?
+        .map_err(|error| AppError::new(StatusCode::BAD_GATEWAY, error.to_string()))
 }
 
 async fn upstream_error(response: reqwest::Response, request: &Value) -> AppError {
@@ -540,9 +567,25 @@ impl Arguments {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, future::pending};
 
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn streaming_header_timeout_is_a_gateway_timeout() {
+        let error = await_upstream_headers(
+            pending::<reqwest::Result<reqwest::Response>>(),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(
+            error.message,
+            "Upstream timed out waiting for response headers"
+        );
+    }
 
     #[test]
     fn custom_upstream_headers_are_preserved() {

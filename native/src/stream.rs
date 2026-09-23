@@ -1,6 +1,8 @@
 use std::{
     collections::{BTreeMap, HashSet},
     convert::Infallible,
+    fmt,
+    time::Duration,
 };
 
 use async_stream::stream;
@@ -13,10 +15,28 @@ use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt};
 use rand::Rng;
 use serde_json::{Value, json};
+use tokio::time::{Instant, timeout_at};
 
 use crate::{
     converter::{map_finish_reason, reasoning_content},
     storage::Storage,
+};
+
+const FIRST_BODY_BYTES_TIMEOUT: Duration = Duration::from_secs(120);
+const FIRST_ANTHROPIC_EVENT_TIMEOUT: Duration = Duration::from_secs(240);
+const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+#[derive(Clone, Copy)]
+struct StreamTimeouts {
+    first_body_bytes: Duration,
+    first_anthropic_event: Duration,
+    body_idle: Duration,
+}
+
+const STREAM_TIMEOUTS: StreamTimeouts = StreamTimeouts {
+    first_body_bytes: FIRST_BODY_BYTES_TIMEOUT,
+    first_anthropic_event: FIRST_ANTHROPIC_EVENT_TIMEOUT,
+    body_idle: BODY_IDLE_TIMEOUT,
 };
 
 pub fn transform_stream(
@@ -25,26 +45,62 @@ pub fn transform_stream(
     provider: String,
     storage: Storage,
     request_id: String,
+    headers_received_at: Instant,
     tool_names: Vec<String>,
 ) -> Body {
-    transform_bytes(
+    transform_bytes_with_timeouts(
         response.bytes_stream(),
         StreamState::new(model, provider, request_id, tool_names),
         storage,
+        headers_received_at,
+        STREAM_TIMEOUTS,
     )
 }
 
-fn transform_bytes<S, E>(upstream: S, mut state: StreamState, storage: Storage) -> Body
+#[cfg(test)]
+fn transform_bytes<S, E>(upstream: S, state: StreamState, storage: Storage) -> Body
+where
+    S: Stream<Item = Result<Bytes, E>> + Send + 'static,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    transform_bytes_with_timeouts(upstream, state, storage, Instant::now(), STREAM_TIMEOUTS)
+}
+
+fn transform_bytes_with_timeouts<S, E>(
+    upstream: S,
+    mut state: StreamState,
+    storage: Storage,
+    headers_received_at: Instant,
+    timeouts: StreamTimeouts,
+) -> Body
 where
     S: Stream<Item = Result<Bytes, E>> + Send + 'static,
     E: std::error::Error + Send + Sync + 'static,
 {
     let output = stream! {
+        let upstream = timeout_bytes(upstream, headers_received_at, timeouts);
         let events = upstream.eventsource();
         futures_util::pin_mut!(events);
         let mut failed = false;
         let mut done = false;
-        while let Some(event) = events.next().await {
+        let first_event_deadline = headers_received_at + timeouts.first_anthropic_event;
+        let mut waiting_for_first_event = true;
+        loop {
+            let event = if waiting_for_first_event {
+                match timeout_at(first_event_deadline, events.next()).await {
+                    Ok(event) => event,
+                    Err(_) => {
+                        let message = "Upstream stream timed out waiting for first Anthropic event";
+                        storage.record_error(state.error_record(message));
+                        yield Ok::<Event, Infallible>(encode_event(error_event(message)));
+                        failed = true;
+                        break;
+                    }
+                }
+            } else {
+                events.next().await
+            };
+            let Some(event) = event else { break };
             let result = match event {
                 Ok(event) if event.data == "[DONE]" => {
                     done = true;
@@ -56,7 +112,12 @@ where
                 Err(error) => Err(format!("Upstream stream failed: {error}")),
             };
             match result {
-                Ok(events) => for event in events { yield Ok::<Event, Infallible>(encode_event(event)); },
+                Ok(events) => {
+                    if !events.is_empty() {
+                        waiting_for_first_event = false;
+                    }
+                    for event in events { yield Ok::<Event, Infallible>(encode_event(event)); }
+                }
                 Err(message) => {
                     storage.record_error(state.error_record(&message));
                     yield Ok(encode_event(error_event(&message)));
@@ -79,6 +140,57 @@ where
         }
     };
     Sse::new(output).into_response().into_body()
+}
+
+#[derive(Debug)]
+struct StreamReadError(String);
+
+impl fmt::Display for StreamReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StreamReadError {}
+
+fn timeout_bytes<S, E>(
+    upstream: S,
+    headers_received_at: Instant,
+    timeouts: StreamTimeouts,
+) -> impl Stream<Item = Result<Bytes, StreamReadError>> + Send
+where
+    S: Stream<Item = Result<Bytes, E>> + Send,
+    E: std::error::Error + Send + Sync,
+{
+    stream! {
+        futures_util::pin_mut!(upstream);
+        let mut first = true;
+        let mut deadline = headers_received_at + timeouts.first_body_bytes;
+        loop {
+            match timeout_at(deadline, upstream.next()).await {
+                Ok(Some(Ok(bytes))) if bytes.is_empty() => {}
+                Ok(Some(Ok(bytes))) => {
+                    first = false;
+                    yield Ok(bytes);
+                    deadline = Instant::now() + timeouts.body_idle;
+                }
+                Ok(Some(Err(error))) => {
+                    yield Err(StreamReadError(error.to_string()));
+                    break;
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    let message = if first {
+                        "Upstream stream timed out waiting for first body bytes"
+                    } else {
+                        "Upstream stream was idle for too long"
+                    };
+                    yield Err(StreamReadError(message.into()));
+                    break;
+                }
+            }
+        }
+    }
 }
 
 fn encode_event(event: Value) -> Event {
@@ -599,6 +711,28 @@ mod tests {
         assert!(open.is_empty());
     }
 
+    fn timeouts(first_body: u64, first_event: u64, idle: u64) -> StreamTimeouts {
+        StreamTimeouts {
+            first_body_bytes: Duration::from_secs(first_body),
+            first_anthropic_event: Duration::from_secs(first_event),
+            body_idle: Duration::from_secs(idle),
+        }
+    }
+
+    async fn render_timed<S, E>(upstream: S, timeouts: StreamTimeouts) -> String
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, writer) = Storage::start(dir.path().into());
+        let body =
+            transform_bytes_with_timeouts(upstream, state(&[]), storage, Instant::now(), timeouts);
+        let result = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        writer.await.unwrap();
+        String::from_utf8(result.to_vec()).unwrap()
+    }
+
     #[test]
     fn matches_shared_fixture_and_main_usage() {
         let fixture: Value =
@@ -948,5 +1082,131 @@ mod tests {
             drop(body);
             writer.await.unwrap();
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn times_out_when_first_body_bytes_never_arrive() {
+        let upstream = futures_util::stream::pending::<Result<Bytes, io::Error>>();
+        let text = render_timed(upstream, timeouts(1, 2, 3)).await;
+
+        assert!(
+            text.contains("timed out waiting for first body bytes"),
+            "{text}"
+        );
+        assert_eq!(text.matches("event: error").count(), 1, "{text}");
+        assert!(!text.contains("event: message_stop"), "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn partial_bytes_and_comments_do_not_satisfy_first_event_deadline() {
+        for first in [
+            Bytes::from_static(b"data: {"),
+            Bytes::from_static(b": ping\n\n"),
+        ] {
+            let upstream = stream! {
+                yield Ok::<_, io::Error>(first);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                yield Ok(Bytes::from_static(b"data: [DONE]\n\n"));
+            };
+            let text = render_timed(upstream, timeouts(1, 2, 10)).await;
+
+            assert!(
+                text.contains("timed out waiting for first Anthropic event"),
+                "{text}"
+            );
+            assert_eq!(text.matches("event: error").count(), 1, "{text}");
+            assert!(!text.contains("event: message_stop"), "{text}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_byte_and_first_event_deadlines_share_the_headers_anchor() {
+        let upstream = stream! {
+            tokio::time::sleep(Duration::from_millis(900)).await;
+            yield Ok::<_, io::Error>(Bytes::from_static(b"data: {"));
+            tokio::time::sleep(Duration::from_millis(1_200)).await;
+            yield Ok(Bytes::from_static(b"}\n\n"));
+        };
+        let text = render_timed(upstream, timeouts(1, 2, 10)).await;
+
+        assert!(
+            text.contains("timed out waiting for first Anthropic event"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("timed out waiting for first body bytes"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn body_idle_timeout_resets_after_each_non_empty_chunk() {
+        let first = format!("data: {}\n\n", chunk(json!({"content":"a"}), None));
+        let second = format!("data: {}\n\n", chunk(json!({"content":"b"}), Some("stop")));
+        let upstream = stream! {
+            yield Ok::<_, io::Error>(Bytes::from(first));
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            yield Ok(Bytes::from(second));
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            yield Ok(Bytes::from_static(b"data: [DONE]\n\n"));
+        };
+        let text = render_timed(upstream, timeouts(1, 2, 3)).await;
+
+        assert!(text.contains("event: message_stop"), "{text}");
+        assert!(!text.contains("event: error"), "{text}");
+
+        let stalled = stream! {
+            yield Ok::<_, io::Error>(Bytes::from(format!(
+                "data: {}\n\n",
+                chunk(json!({"content":"a"}), None)
+            )));
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            yield Ok(Bytes::from_static(b"data: [DONE]\n\n"));
+        };
+        let text = render_timed(stalled, timeouts(1, 2, 3)).await;
+        assert!(text.contains("stream was idle for too long"), "{text}");
+        assert_eq!(text.matches("event: error").count(), 1, "{text}");
+        assert!(!text.contains("event: message_stop"), "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn downstream_backpressure_does_not_consume_body_idle_budget() {
+        let (resume, wait) = tokio::sync::oneshot::channel::<()>();
+        let upstream = stream! {
+            yield Ok::<_, io::Error>(Bytes::from(format!(
+                "data: {}\n\n",
+                chunk(json!({"content":"a"}), None)
+            )));
+            let _ = wait.await;
+            yield Ok(Bytes::from(format!(
+                "data: {}\n\ndata: [DONE]\n\n",
+                chunk(json!({}), Some("stop"))
+            )));
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, writer) = Storage::start(dir.path().into());
+        let mut body = transform_bytes_with_timeouts(
+            upstream,
+            state(&[]),
+            storage,
+            Instant::now(),
+            timeouts(1, 2, 3),
+        )
+        .into_data_stream();
+        loop {
+            let bytes = body.next().await.unwrap().unwrap();
+            if String::from_utf8_lossy(&bytes).contains("event: content_block_delta") {
+                break;
+            }
+        }
+        tokio::time::advance(Duration::from_secs(10)).await;
+        resume.send(()).unwrap();
+        let mut tail = String::new();
+        while let Some(bytes) = body.next().await {
+            tail.push_str(&String::from_utf8_lossy(&bytes.unwrap()));
+        }
+        assert!(tail.contains("event: message_stop"), "{tail}");
+        assert!(!tail.contains("event: error"), "{tail}");
+        writer.await.unwrap();
     }
 }
