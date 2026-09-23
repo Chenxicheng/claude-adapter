@@ -62,6 +62,16 @@ const cases = {
     ],
     parity: true,
   },
+  repeatedToolName: {
+    chunks: [
+      chunk({ tool_calls: [tool(0, 'lookup', '{')] }),
+      chunk(
+        { tool_calls: [{ index: 0, function: { name: 'lookup', arguments: '"id":1}' } }] },
+        'tool_calls'
+      ),
+    ],
+    parity: true,
+  },
   parallel: {
     chunks: [
       chunk({ tool_calls: [tool(0, 'lookup', '{'), tool(1, 'other', '{')] }),
@@ -106,6 +116,25 @@ const cases = {
     text: 'complete',
   },
   emptyChoice: { chunks: [{ choices: [] }, chunk({ content: 'answer' }, 'stop')], parity: true },
+  postFinishEmpty: {
+    chunks: [chunk({ content: 'answer' }, 'stop'), chunk({}, 'stop'), usage],
+    parity: true,
+  },
+  postFinishContent: {
+    chunks: [chunk({ content: 'answer' }, 'stop'), chunk({ content: 'late' })],
+    error: true,
+  },
+  postFinishConflict: {
+    chunks: [chunk({ content: 'answer' }, 'stop'), chunk({}, 'length')],
+    error: true,
+  },
+  changedToolName: {
+    chunks: [
+      chunk({ tool_calls: [tool(0, 'lookup', '{')] }),
+      chunk({ tool_calls: [{ index: 0, function: { name: 'other', arguments: '}' } }] }),
+    ],
+    error: true,
+  },
   length: { chunks: [chunk({ content: 'partial' }, 'length')], reason: 'max_tokens' },
   truncated: { chunks: [chunk({ content: 'partial' })], done: false, error: true },
   badArguments: {

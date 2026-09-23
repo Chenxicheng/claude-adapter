@@ -21,6 +21,15 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ## [Unreleased]
 
+### Fixed
+
+- Accept repeated identical tool names while streaming their arguments; continue rejecting a changed name.
+- Accept content-free choice tails and final usage after `finish_reason` without repeating downstream termination.
+
+### Changed
+
+- Verify real Claude Code streaming with isolated settings, a counted upstream route, and event arrival timing.
+
 ## [2.0.0] — 2026-09-20
 
 ### Added

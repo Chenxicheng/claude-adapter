@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 2,
+  "tests": {
+    "upstream": {
+      "passed": true,
+      "status": 200,
+      "stream": true,
+      "eventCount": 3793,
+      "textDeltaCount": 1721,
+      "finishReason": "stop",
+      "inputTokens": null,
+      "outputTokens": null
+    },
+    "adapter": {
+      "passed": true,
+      "status": 200,
+      "eventTypes": [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop"
+      ],
+      "deltaTypes": [
+        "thinking_delta",
+        "text_delta"
+      ],
+      "stopReason": "end_turn",
+      "inputTokens": 33,
+      "outputTokens": 1818
+    },
+    "health": {
+      "passed": true,
+      "status": 200
+    },
+    "claudeText": {
+      "passed": false,
+      "exitCode": 0,
+      "expectedContentObserved": false,
+      "toolObserved": false,
+      "thinkingObserved": false,
+      "eventTypes": [
+        "message_start",
+        "message_delta",
+        "message_stop"
+      ],
+      "textDeltaCount": 0,
+      "textDeltaFirstMs": null,
+      "textDeltaLastMs": null,
+      "textDeltaMaxGapMs": 0,
+      "textBeforeUpstreamDone": false,
+      "upstreamCompletedMs": 1802,
+      "requestCount": 2,
+      "requestStream": true,
+      "requestStatus": 200,
+      "rustSent": 2,
+      "requestMatched": true
+    },
+    "claudeRead": {
+      "passed": false,
+      "exitCode": 0,
+      "expectedContentObserved": false,
+      "toolObserved": false,
+      "thinkingObserved": false,
+      "eventTypes": [
+        "message_start",
+        "message_delta",
+        "message_stop"
+      ],
+      "textDeltaCount": 0,
+      "textDeltaFirstMs": null,
+      "textDeltaLastMs": null,
+      "textDeltaMaxGapMs": 0,
+      "textBeforeUpstreamDone": false,
+      "upstreamCompletedMs": 1768,
+      "requestCount": 2,
+      "requestStream": true,
+      "requestStatus": 200,
+      "rustSent": 2,
+      "requestMatched": true
+    }
+  },
+  "model": "qwen/qwen3.6-35b-a3b",
+  "passed": false,
+  "probe": {
+    "requestCount": 5,
+    "requests": [
+      {
+        "model": "qwen/qwen3.6-35b-a3b",
+        "stream": true,
+        "status": 200,
+        "upstreamFirstByteMs": 127,
+        "upstreamCompletedMs": 19571,
+        "requestCompletedMs": 19572
+      },
+      {
+        "model": "qwen/qwen3.6-35b-a3b",
+        "stream": true,
+        "status": 200,
+        "upstreamFirstByteMs": 7541,
+        "upstreamCompletedMs": 7541,
+        "requestCompletedMs": 7541
+      },
+      {
+        "model": "qwen/qwen3.6-35b-a3b",
+        "stream": true,
+        "status": 200,
+        "upstreamFirstByteMs": 1801,
+        "upstreamCompletedMs": 1802,
+        "requestCompletedMs": 1802
+      },
+      {
+        "model": "qwen/qwen3.6-35b-a3b",
+        "stream": true,
+        "status": 200,
+        "upstreamFirstByteMs": 1702,
+        "upstreamCompletedMs": 1703,
+        "requestCompletedMs": 1703
+      },
+      {
+        "model": "qwen/qwen3.6-35b-a3b",
+        "stream": true,
+        "status": 200,
+        "upstreamFirstByteMs": 1767,
+        "upstreamCompletedMs": 1768,
+        "requestCompletedMs": 1768
+      }
+    ]
+  }
+}

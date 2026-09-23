@@ -199,9 +199,6 @@ impl StreamState {
         if choices.len() != 1 {
             return Err("Upstream stream chunk must contain exactly one choice".into());
         }
-        if self.finish_reason.is_some() {
-            return Err("Upstream stream sent a choice after finish_reason".into());
-        }
         let choice = &choices[0];
         let delta = choice
             .get("delta")
@@ -222,6 +219,37 @@ impl StreamState {
                     "Upstream stream delta.{field} must be a string or null"
                 ));
             }
+        }
+        if delta
+            .get("tool_calls")
+            .is_some_and(|calls| !calls.is_null() && !calls.is_array())
+        {
+            return Err("Upstream stream delta.tool_calls must be an array".into());
+        }
+        if let Some(finished) = self.finish_reason.as_deref() {
+            if let Some(reason) = choice
+                .get("finish_reason")
+                .filter(|reason| !reason.is_null())
+            {
+                let reason = reason
+                    .as_str()
+                    .ok_or("Upstream stream finish_reason must be a string or null")?;
+                if reason != finished {
+                    return Err("Upstream stream sent a conflicting finish_reason".into());
+                }
+            }
+            let has_content = delta.iter().any(|(field, value)| match field.as_str() {
+                "role" => false,
+                "content" | "refusal" | "reasoning_content" | "reasoning" => {
+                    value.as_str().is_some_and(|text| !text.is_empty())
+                }
+                "tool_calls" => value.as_array().is_some_and(|calls| !calls.is_empty()),
+                _ => !value.is_null(),
+            });
+            if has_content {
+                return Err("Upstream stream sent content after finish_reason".into());
+            }
+            return Ok(events);
         }
         if !self.started {
             events.push(json!({"type": "message_start", "message": {
@@ -250,12 +278,6 @@ impl StreamState {
                 }
                 self.push_content(text, kind, &mut events);
             }
-        }
-        if delta
-            .get("tool_calls")
-            .is_some_and(|calls| !calls.is_null() && !calls.is_array())
-        {
-            return Err("Upstream stream delta.tool_calls must be an array".into());
         }
         if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
@@ -333,9 +355,12 @@ impl StreamState {
                     format!("Upstream tool delta function.{field} must be a string")
                 })?;
                 if field == "name" && !fragment.is_empty() && tool.block_index.is_some() {
-                    return Err(
-                        "Upstream tool function.name changed after streaming started".into(),
-                    );
+                    if fragment != target.as_str() {
+                        return Err(
+                            "Upstream tool function.name changed after streaming started".into(),
+                        );
+                    }
+                    continue;
                 }
                 target.push_str(fragment);
             }
@@ -690,6 +715,46 @@ mod tests {
     }
 
     #[test]
+    fn accepts_repeated_tool_name_and_rejects_changed_name() {
+        let mut stream_state = state(&["lookup", "other"]);
+        let mut events = stream_state
+            .process_chunk(&chunk(json!({"tool_calls":[call(0,"lookup","{")]}), None))
+            .unwrap();
+        events.extend(
+            stream_state
+                .process_chunk(&chunk(
+                    json!({"tool_calls":[{"index":0,"function":{"name":"lookup","arguments":"\"id\":1}"}}]}),
+                    Some("tool_calls"),
+                ))
+                .unwrap(),
+        );
+        events.extend(stream_state.finish(true).unwrap());
+        check_lifecycle(&events);
+        assert_eq!(stream_state.tools[&0].name, "lookup");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["delta"]["type"] == "input_json_delta")
+                .count(),
+            2
+        );
+
+        let mut changed = state(&["lookup", "other"]);
+        changed
+            .process_chunk(&chunk(json!({"tool_calls":[call(0,"lookup","{")]}), None))
+            .unwrap();
+        assert!(
+            changed
+                .process_chunk(&chunk(
+                    json!({"tool_calls":[{"index":0,"function":{"name":"other"}}]}),
+                    None,
+                ))
+                .unwrap_err()
+                .contains("name changed")
+        );
+    }
+
+    #[test]
     fn validates_tools_and_terminal_state_without_false_success() {
         for (name, args) in [
             ("lookup", "[1]"),
@@ -750,6 +815,50 @@ mod tests {
             state.finish(true).unwrap()[0]["usage"],
             json!({"input_tokens":0,"output_tokens":2})
         );
+    }
+
+    #[test]
+    fn accepts_content_free_tails_but_rejects_post_finish_content_or_conflict() {
+        let mut stream_state = state(&[]);
+        let mut events = stream_state
+            .process_chunk(&chunk(json!({"content":"answer"}), Some("stop")))
+            .unwrap();
+        for tail in [
+            chunk(json!({}), None),
+            chunk(
+                json!({"role":"assistant","content":"","tool_calls":[]}),
+                Some("stop"),
+            ),
+            json!({"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4}}),
+        ] {
+            assert!(stream_state.process_chunk(&tail).unwrap().is_empty());
+        }
+        events.extend(stream_state.finish(true).unwrap());
+        check_lifecycle(&events);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "message_stop")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events[events.len() - 2]["usage"],
+            json!({"input_tokens":3,"output_tokens":4})
+        );
+
+        for tail in [
+            chunk(json!({"content":"late"}), None),
+            chunk(json!({"reasoning_content":"late"}), None),
+            chunk(json!({"tool_calls":[{"index":0}]}), None),
+            chunk(json!({}), Some("length")),
+        ] {
+            let mut rejected = state(&[]);
+            rejected
+                .process_chunk(&chunk(json!({"content":"answer"}), Some("stop")))
+                .unwrap();
+            assert!(rejected.process_chunk(&tail).is_err());
+        }
     }
 
     #[test]

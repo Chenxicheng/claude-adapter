@@ -31,7 +31,7 @@ This adapter effectively "tricks" Claude Code into communicating with models it 
 
 - 🔄 **Protocol Translation Layer** — Implements a robust bi-directional conversion engine that maps Anthropic's message format to OpenAI's chat completion schema on the fly.
 - 🌊 **Server-Sent Events (SSE) Streaming** — Provides full support for real-time response streaming, ensuring that the interactive feel of Claude Code is preserved even when backend by different models.
-- **Thinking and tools** — Streams upstream reasoning and parallel tool arguments as they arrive; preserves text after tools and validates complete tool inputs. Thinking signatures are not fabricated. See [protocol behavior and parity exceptions](docs/API.md#streaming-response).
+- **Thinking and tools** — Streams upstream reasoning and parallel tool arguments as they arrive; preserves text after tools, accepts repeated identical tool names and content-free terminal tails, and validates complete tool inputs. Thinking signatures are not fabricated. See [protocol behavior and parity exceptions](docs/API.md#streaming-response).
 - 🛠️ **Tool Invocation Compatibility** — Seamlessly translates tool definitions and function call requests for upstream models that support native tool/function calling.
 - ⚡ **Zero-Configuration Initialization** — Features an interactive CLI setup wizard that automates the generation of configuration files and environment variables.
 - 🔌 **Transparent Proxying** — Operates non-intrusively as a local service, requiring no modifications to the core Claude Code binary or internal logic.
