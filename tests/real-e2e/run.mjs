@@ -17,6 +17,7 @@ const binary = path.resolve(
 const resultsDir = path.resolve(args['results-dir'] ?? path.join(currentDirectory, 'results'));
 const withClaude = args['with-claude'] === true;
 const requireThinking = args['require-thinking'] === true;
+const defaultUpstreamRoot = 'http://127.0.0.1:1234';
 const startedAt = new Date();
 const result = { schemaVersion: 2, tests: {} };
 let adapter;
@@ -26,7 +27,7 @@ let credentialVariable;
 
 try {
   const spring = parseSpringOpenAi(await readFile(springConfig, 'utf8'));
-  const upstreamRoot = stripTrailingSlash(args['upstream-root'] ?? spring.baseUrl);
+  const upstreamRoot = stripTrailingSlash(args['upstream-root'] ?? defaultUpstreamRoot);
   result.model = spring.model;
   credentialVariable = `CLAUDE_ADAPTER_E2E_${process.pid}_${Date.now()}`;
   result.tests.upstream = await testUpstream(
@@ -106,7 +107,6 @@ function parseSpringOpenAi(yaml) {
   };
   return {
     apiKey: scalar('api-key'),
-    baseUrl: stripTrailingSlash(scalar('base-url')),
     completionsPath: scalar('completions-path'),
     model: scalar('model'),
   };

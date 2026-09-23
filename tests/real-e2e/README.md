@@ -30,13 +30,13 @@ Run against the ignored Spring local configuration:
 ```bash
 node tests/real-e2e/run.mjs \
   --spring-config /absolute/path/to/spring-ai-test/src/main/resources/application-local.yaml \
-  --upstream-root http://127.0.0.1:1234 \
   --with-claude
 ```
 
-`--upstream-root` overrides only the server address. The API key, completions path, and model still
-come from `spring.ai.openai` in the supplied YAML. Omit `--with-claude` when only the upstream and
-adapter wire paths need verification. With Claude enabled, both scenarios require multiple
+The runner uses the local LM Studio API at `http://127.0.0.1:1234` by default. `--upstream-root`
+overrides only that server address; the API key, completions path, and model still come from
+`spring.ai.openai` in the supplied YAML. Omit `--with-claude` when only the upstream and adapter
+wire paths need verification. With Claude enabled, both scenarios require multiple
 separately received `text_delta` events before the probe observes upstream completion; the Read
 scenario also requires an actual `Read` tool event. A one-shot or empty upstream response fails.
 Add `--require-thinking` to require thinking deltas in the adapter and Claude Code scenarios.
