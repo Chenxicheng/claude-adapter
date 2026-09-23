@@ -21,6 +21,8 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-09-24
+
 ### Added
 
 - Add an explicit upstream assistant-prefill capability contract with safe `unsupported`, documented `continue_final_message`, and `native` modes.
