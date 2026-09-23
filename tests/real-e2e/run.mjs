@@ -19,7 +19,11 @@ const withClaude = args['with-claude'] === true;
 const requireThinking = args['require-thinking'] === true;
 const defaultUpstreamRoot = 'http://127.0.0.1:1234';
 const startedAt = new Date();
-const result = { schemaVersion: 2, tests: {} };
+const result = {
+  schemaVersion: 3,
+  upstreamCapabilities: { assistantPrefill: 'native' },
+  tests: {},
+};
 let adapter;
 let probe;
 let temporaryDirectory;
@@ -42,7 +46,7 @@ try {
   const adapterBaseUrl = `${probe.url}${spring.completionsPath.replace(/\/chat\/completions$/, '')}`;
   await writeFile(
     adapterConfig,
-    `${JSON.stringify({ baseUrl: adapterBaseUrl, apiKeyEnv: credentialVariable, models: { opus: spring.model, sonnet: spring.model, haiku: spring.model } })}\n`,
+    `${JSON.stringify({ baseUrl: adapterBaseUrl, apiKeyEnv: credentialVariable, upstreamCapabilities: result.upstreamCapabilities, models: { opus: spring.model, sonnet: spring.model, haiku: spring.model } })}\n`,
     { mode: 0o600 }
   );
   adapter = await startAdapter(binary, adapterConfig, credentialVariable, spring.apiKey);
@@ -51,9 +55,33 @@ try {
   result.tests.health = await testHealth(adapter.url);
   assert(result.tests.health.passed, 'Adapter health check failed');
   if (withClaude) {
+    const textProbeStart = probe.count();
     result.tests.claudeText = await testClaude(adapter, spring.model, temporaryDirectory, false);
+    const exactTextRequest = probe.recordsSince(textProbeStart).at(0)?.body;
+    assert(exactTextRequest, 'No converted Claude text request was captured');
+    result.tests.matrix = {
+      exactTextNonStream: await testOpenAiRequest(
+        `${upstreamRoot}${spring.completionsPath}`,
+        spring.apiKey,
+        { ...exactTextRequest, stream: false, stream_options: undefined },
+        { expectedText: 'CLAUDE_COMPLEX_OK' }
+      ),
+      readAuto: await testOpenAiRequest(
+        `${upstreamRoot}${spring.completionsPath}`,
+        spring.apiKey,
+        minimalReadRequest(spring.model, 'auto'),
+        { expectedTool: 'Read' }
+      ),
+      readNamed: await testOpenAiRequest(
+        `${upstreamRoot}${spring.completionsPath}`,
+        spring.apiKey,
+        minimalReadRequest(spring.model, 'named'),
+        { expectedTool: 'Read' }
+      ),
+    };
     result.tests.claudeRead = await testClaude(adapter, spring.model, temporaryDirectory, true);
     assert(result.tests.claudeText.passed, 'Claude Code complex text scenario failed');
+    assert(result.tests.matrix.readAuto.passed, 'Read tool auto-choice scenario failed');
     assert(result.tests.claudeRead.passed, 'Claude Code Read tool scenario failed');
   }
   result.probe = probe.summary();
@@ -61,7 +89,10 @@ try {
     result.tests.upstream.passed &&
     result.tests.adapter.passed &&
     result.tests.health.passed &&
-    (!withClaude || (result.tests.claudeText.passed && result.tests.claudeRead.passed));
+    (!withClaude ||
+      (result.tests.claudeText.passed &&
+        result.tests.matrix.readAuto.passed &&
+        result.tests.claudeRead.passed));
   assert(result.passed, 'Real E2E acceptance failed');
 } catch (error) {
   result.passed = false;
@@ -89,7 +120,7 @@ function parseArgs(values) {
     const value = values[index];
     if (!value.startsWith('--')) throw new Error(`Unexpected argument: ${value}`);
     const name = value.slice(2);
-    if (name === 'with-claude') parsed[name] = true;
+    if (['with-claude', 'require-thinking'].includes(name)) parsed[name] = true;
     else parsed[name] = values[++index];
   }
   return parsed;
@@ -178,6 +209,116 @@ async function testUpstream(url, apiKey, model) {
   };
 }
 
+function minimalReadRequest(model, choice) {
+  return {
+    model,
+    messages: [{ role: 'user', content: 'Use the Read tool with path truth.txt.' }],
+    max_tokens: 1024,
+    temperature: 0,
+    stream: true,
+    stream_options: { include_usage: true },
+    tools: [
+      {
+        type: 'function',
+        function: {
+          name: 'Read',
+          description: 'Read a file from the current working directory.',
+          parameters: {
+            type: 'object',
+            properties: { path: { type: 'string' } },
+            required: ['path'],
+          },
+        },
+      },
+    ],
+    tool_choice: choice === 'named' ? { type: 'function', function: { name: 'Read' } } : 'auto',
+  };
+}
+
+async function testOpenAiRequest(url, apiKey, request, expected) {
+  assert(request && typeof request === 'object', 'No converted Claude text request was captured');
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+    signal: AbortSignal.timeout(180_000),
+  });
+  const observation = newUpstreamObservation();
+  const toolNames = new Map();
+  let expectedTextObserved = expected.expectedText == null;
+  let expectedToolObserved = expected.expectedTool == null;
+  const inspect = (value) => {
+    for (const choice of Array.isArray(value?.choices) ? value.choices : []) {
+      const delta = choice?.delta ?? choice?.message;
+      if (
+        expected.expectedText != null &&
+        typeof delta?.content === 'string' &&
+        delta.content.includes(expected.expectedText)
+      )
+        expectedTextObserved = true;
+      if (expected.expectedTool != null && Array.isArray(delta?.tool_calls)) {
+        for (const call of delta.tool_calls) {
+          const index = Number.isInteger(call?.index) ? call.index : 0;
+          const name = call?.function?.name;
+          if (typeof name === 'string')
+            toolNames.set(index, `${toolNames.get(index) ?? ''}${name}`);
+        }
+        expectedToolObserved ||= [...toolNames.values()].includes(expected.expectedTool);
+      }
+    }
+  };
+  if (request.stream) {
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const inspectLine = (line) => {
+      const data = line.replace(/\r$/, '').replace(/^data:\s*/, '');
+      if (!data || data === '[DONE]') {
+        if (data === '[DONE]') observation.doneObserved = true;
+        return;
+      }
+      try {
+        const value = JSON.parse(data);
+        inspect(value);
+        observeOpenAiObject(observation, value);
+      } catch {
+        observation.outcome = 'protocol_error';
+      }
+    };
+    if (response.body)
+      for await (const chunk of response.body) {
+        observation.responseChunkCount++;
+        buffer += decoder.decode(chunk, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) inspectLine(line);
+      }
+    buffer += decoder.decode();
+    if (buffer) inspectLine(buffer);
+  } else {
+    try {
+      observation.responseChunkCount = 1;
+      const value = await response.json();
+      inspect(value);
+      observeOpenAiObject(observation, value);
+    } catch {
+      observation.outcome = 'protocol_error';
+    }
+  }
+  finalizeObservation(observation);
+  return {
+    passed:
+      response.ok &&
+      observation.outcome === 'usable' &&
+      expectedTextObserved &&
+      expectedToolObserved,
+    status: response.status,
+    stream: request.stream === true,
+    ...observation,
+    expectedTextObserved,
+    expectedToolObserved,
+  };
+}
+
 async function startProbe(upstreamUrl) {
   const requests = [];
   const server = createServer(async (request, response) => {
@@ -191,14 +332,16 @@ async function startProbe(upstreamUrl) {
       parsed = {};
     }
     const record = {
-      model: typeof parsed.model === 'string' ? parsed.model : null,
-      stream: parsed.stream === true,
+      sequence: requests.length + 1,
+      ...summarizeRequest(parsed),
       status: null,
       upstreamFirstByteMs: null,
       upstreamCompletedMs: null,
       upstreamCompletedAt: null,
       requestCompletedMs: null,
+      ...newUpstreamObservation(),
     };
+    Object.defineProperty(record, 'body', { value: parsed });
     requests.push(record);
     try {
       const upstream = await fetch(upstreamUrl, {
@@ -214,23 +357,35 @@ async function startProbe(upstreamUrl) {
         )
       );
       if (!upstream.body) {
+        record.outcome = 'protocol_error';
         record.upstreamCompletedMs = Date.now() - started;
         record.upstreamCompletedAt = Date.now();
         response.end();
         return;
       }
       const reader = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      let responseBuffer = '';
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
         record.upstreamFirstByteMs ??= Date.now() - started;
+        record.responseChunkCount++;
+        responseBuffer += decoder.decode(value, { stream: true });
+        const lines = responseBuffer.split('\n');
+        responseBuffer = lines.pop();
+        for (const line of lines) observeSseLine(record, line);
         response.write(Buffer.from(value));
       }
+      responseBuffer += decoder.decode();
+      if (responseBuffer) observeSseLine(record, responseBuffer);
+      finalizeObservation(record);
       record.upstreamCompletedMs = Date.now() - started;
       record.upstreamCompletedAt = Date.now();
       response.end();
     } catch {
       record.status = 502;
+      record.outcome = 'protocol_error';
       response.writeHead(502, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: { type: 'proxy_error' } }));
     } finally {
@@ -250,29 +405,155 @@ async function startProbe(upstreamUrl) {
     summary() {
       return {
         requestCount: requests.length,
-        requests: requests.map(
-          ({
-            model,
-            stream,
-            status,
-            upstreamFirstByteMs,
-            upstreamCompletedMs,
-            requestCompletedMs,
-          }) => ({
-            model,
-            stream,
-            status,
-            upstreamFirstByteMs,
-            upstreamCompletedMs,
-            requestCompletedMs,
-          })
-        ),
+        requests: requests.map(({ upstreamCompletedAt: _completedAt, ...record }) => record),
       };
     },
     async stop() {
       await new Promise((resolve) => server.close(resolve));
     },
   };
+}
+
+function summarizeRequest(request) {
+  const contentTypes = {};
+  const messages = Array.isArray(request.messages) ? request.messages : [];
+  for (const message of messages) {
+    if (typeof message.content === 'string') increment(contentTypes, 'string');
+    else if (message.content == null) increment(contentTypes, 'null');
+    else if (Array.isArray(message.content))
+      for (const part of message.content)
+        increment(contentTypes, typeof part?.type === 'string' ? part.type : 'invalid');
+    else increment(contentTypes, 'invalid');
+  }
+  const maxTokenField =
+    request.max_completion_tokens != null
+      ? 'max_completion_tokens'
+      : request.max_tokens != null
+        ? 'max_tokens'
+        : null;
+  const choice = request.tool_choice;
+  const lastMessage = messages.at(-1);
+  return {
+    model: typeof request.model === 'string' ? request.model : null,
+    stream: request.stream === true,
+    messageCount: messages.length,
+    messageRoles: messages.map((message) => message?.role ?? 'invalid'),
+    messageContentTypes: contentTypes,
+    toolCount: Array.isArray(request.tools) ? request.tools.length : 0,
+    toolChoiceType:
+      typeof choice === 'string'
+        ? choice
+        : typeof choice?.type === 'string'
+          ? choice.type
+          : choice?.function
+            ? 'function'
+            : null,
+    maxTokenField,
+    maxTokenValue: maxTokenField ? request[maxTokenField] : null,
+    thinkingPresent: ['thinking', 'enable_thinking', 'reasoning_effort'].some(
+      (field) => request[field] != null
+    ),
+    terminalAssistantPrefill:
+      lastMessage?.role === 'assistant' &&
+      ((typeof lastMessage.content === 'string' && lastMessage.content.length > 0) ||
+        (Array.isArray(lastMessage.content) && lastMessage.content.length > 0)),
+  };
+}
+
+function newUpstreamObservation() {
+  return {
+    responseChunkCount: 0,
+    sseEventCount: 0,
+    doneObserved: false,
+    finishReasons: [],
+    usage: null,
+    deltaFieldCounts: {},
+    unknownDeltaFields: [],
+    textObserved: false,
+    reasoningObserved: false,
+    refusalObserved: false,
+    toolCallObserved: false,
+    outcome: null,
+  };
+}
+
+function observeSseLine(observation, line) {
+  const value = line.replace(/\r$/, '');
+  if (!value.startsWith('data:')) return;
+  const data = value.slice(5).trimStart();
+  if (data === '[DONE]') {
+    observation.doneObserved = true;
+    return;
+  }
+  try {
+    observeOpenAiObject(observation, JSON.parse(data));
+  } catch {
+    // The adapter owns malformed-SSE reporting; the probe only records a safe outcome.
+    observation.outcome = 'protocol_error';
+  }
+}
+
+function observeOpenAiObject(observation, value) {
+  observation.sseEventCount++;
+  if (value?.usage && typeof value.usage === 'object') {
+    observation.usage = Object.fromEntries(
+      Object.entries(value.usage).filter(([, count]) => Number.isFinite(count))
+    );
+  }
+  for (const choice of Array.isArray(value?.choices) ? value.choices : []) {
+    if (
+      typeof choice?.finish_reason === 'string' &&
+      !observation.finishReasons.includes(choice.finish_reason)
+    )
+      observation.finishReasons.push(choice.finish_reason);
+    observeDelta(observation, choice?.delta ?? choice?.message);
+  }
+}
+
+function observeDelta(observation, delta) {
+  if (!delta || typeof delta !== 'object') return;
+  const known = new Set([
+    'role',
+    'content',
+    'refusal',
+    'reasoning_content',
+    'reasoning',
+    'tool_calls',
+  ]);
+  for (const [field, value] of Object.entries(delta)) {
+    if (value != null) increment(observation.deltaFieldCounts, field);
+    if (!known.has(field) && !observation.unknownDeltaFields.includes(field))
+      observation.unknownDeltaFields.push(field);
+  }
+  observation.textObserved ||= typeof delta.content === 'string' && delta.content.length > 0;
+  observation.reasoningObserved ||=
+    (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) ||
+    (typeof delta.reasoning === 'string' && delta.reasoning.length > 0);
+  observation.refusalObserved ||= typeof delta.refusal === 'string' && delta.refusal.length > 0;
+  observation.toolCallObserved ||= Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0;
+}
+
+function finalizeObservation(observation) {
+  if (observation.outcome === 'protocol_error') return;
+  if (observation.finishReasons.length === 0 && !observation.doneObserved) {
+    observation.outcome = 'protocol_error';
+    return;
+  }
+  const usable =
+    observation.textObserved ||
+    observation.reasoningObserved ||
+    observation.refusalObserved ||
+    observation.toolCallObserved;
+  observation.outcome = usable
+    ? 'usable'
+    : observation.finishReasons.includes('stop')
+      ? 'empty_end_turn'
+      : 'protocol_error';
+  observation.unknownDeltaFields.sort();
+}
+
+function increment(counts, name) {
+  counts[name] = (counts[name] ?? 0) + 1;
 }
 function forwardHeaders(headers) {
   const forwarded = {};
@@ -446,6 +727,7 @@ async function testClaude(adapter, model, directory, toolTest) {
     .map((message) => message.receivedAtMs);
   const caseRequests = probe.recordsSince(probeStart);
   const latest = caseRequests.at(-1);
+  const outputRequest = caseRequests.findLast((request) => request.outcome === 'usable') ?? latest;
   const resultMessage = messages.findLast((message) => message.type === 'result');
   const toolObserved = events.some(
     (event) => event.content_block?.type === 'tool_use' && event.content_block.name === 'Read'
@@ -457,8 +739,9 @@ async function testClaude(adapter, model, directory, toolTest) {
     textTimes.length >= 2 &&
     textTimes.some((time, index) => index > 0 && time > textTimes[index - 1]);
   const textBeforeUpstreamDone =
-    latest?.upstreamCompletedAt != null &&
-    textTimes.some((time) => time < latest.upstreamCompletedAt);
+    outputRequest?.upstreamCompletedAt != null &&
+    textTimes.some((time) => time < outputRequest.upstreamCompletedAt);
+  const emptyEndTurnObserved = caseRequests.some((request) => request.outcome === 'empty_end_turn');
   const rustSent = adapter.sentCount() - rustStart;
   const requestMatched =
     caseRequests.length === rustSent &&
@@ -474,6 +757,7 @@ async function testClaude(adapter, model, directory, toolTest) {
       (!requireThinking || thinkingObserved) &&
       distinctTextDeltas &&
       textBeforeUpstreamDone &&
+      !emptyEndTurnObserved &&
       requestMatched,
     exitCode: execution.code,
     expectedContentObserved,
@@ -485,12 +769,21 @@ async function testClaude(adapter, model, directory, toolTest) {
     textDeltaLastMs: textTimes.at(-1) ? textTimes.at(-1) - execution.startedAt : null,
     textDeltaMaxGapMs: maxGap(textTimes),
     textBeforeUpstreamDone,
+    emptyEndTurnObserved,
     upstreamCompletedMs: latest?.upstreamCompletedMs ?? null,
     requestCount: caseRequests.length,
     requestStream: latest?.stream ?? null,
     requestStatus: latest?.status ?? null,
     rustSent,
     requestMatched,
+    requests: caseRequests.map((request) => ({
+      sequence: request.sequence,
+      outcome: request.outcome,
+      finishReasons: request.finishReasons,
+      textObserved: request.textObserved,
+      reasoningObserved: request.reasoningObserved,
+      toolCallObserved: request.toolCallObserved,
+    })),
   };
 }
 

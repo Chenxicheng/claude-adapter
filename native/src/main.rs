@@ -24,7 +24,7 @@ use axum::{
 };
 use chrono::Utc;
 use config::AdapterConfig;
-use converter::{convert_request, convert_response, validate_request};
+use converter::{convert_request_with_mode, convert_response, validate_request};
 use error::AppError;
 use serde_json::{Value, json};
 use storage::Storage;
@@ -166,8 +166,12 @@ async fn handle_messages(
 ) -> Result<Response, AppError> {
     let model = anthropic["model"].as_str().expect("validated model");
     let streaming = anthropic.get("stream").and_then(Value::as_bool) == Some(true);
+    let openai = convert_request_with_mode(
+        anthropic,
+        &state.config.base_url,
+        state.config.upstream_capabilities.assistant_prefill,
+    )?;
     eprintln!("-> {model} [sent] {request_id}");
-    let openai = convert_request(anthropic, &state.config.base_url)?;
     let request = state
         .client
         .post(state.config.chat_completions_url())
@@ -222,19 +226,24 @@ async fn handle_messages(
         .await
         .map_err(|error| AppError::new(StatusCode::BAD_GATEWAY, error.to_string()))?;
     let converted = convert_response(&openai_response, model)?;
-    if openai_response
+    let has_usage = openai_response
         .get("usage")
-        .is_some_and(is_non_empty_object)
-    {
+        .is_some_and(is_non_empty_object);
+    let empty_end_turn = converted["stop_reason"] == "end_turn"
+        && converted["content"].as_array().is_some_and(Vec::is_empty);
+    if has_usage || empty_end_turn {
         let mut record = json!({
             "timestamp": now(),
             "schemaVersion": 2,
             "provider": state.config.base_url,
             "modelName": model,
             "streaming": false,
-            "usageStatus": "complete",
-            "usage": openai_response["usage"],
+            "usageStatus": if has_usage { "complete" } else { "missing" },
+            "outcome": if empty_end_turn { "empty_end_turn" } else { "usable" },
         });
+        if has_usage {
+            record["usage"] = openai_response["usage"].clone();
+        }
         if let Some(actual_model) = openai_response.get("model") {
             record["model"] = actual_model.clone();
         }
@@ -338,12 +347,13 @@ fn upstream_request_shape(request: &Value) -> Value {
         .and_then(Value::as_str)
         .map(|model| model.to_ascii_lowercase())
         .map(|model| {
-            if model.starts_with("glm-5") {
+            let name = model.rsplit('/').next().unwrap_or(&model);
+            if name.starts_with("glm-5") {
                 "glm-5"
-            } else if model.starts_with("qwen3") {
+            } else if name.starts_with("qwen3") {
                 "qwen3"
-            } else if model.starts_with("gpt-5")
-                || model
+            } else if name.starts_with("gpt-5")
+                || name
                     .strip_prefix('o')
                     .and_then(|suffix| suffix.chars().next())
                     .is_some_and(|character| character.is_ascii_digit())
@@ -354,6 +364,18 @@ fn upstream_request_shape(request: &Value) -> Value {
             }
         })
         .unwrap_or("unknown");
+    let terminal_assistant_prefill = request
+        .get("messages")
+        .and_then(Value::as_array)
+        .and_then(|messages| messages.last())
+        .is_some_and(|message| {
+            message.get("role").and_then(Value::as_str) == Some("assistant")
+                && match message.get("content") {
+                    Some(Value::String(content)) => !content.is_empty(),
+                    Some(Value::Array(content)) => !content.is_empty(),
+                    _ => false,
+                }
+        });
 
     json!({
         "topLevelFields": top_level_fields,
@@ -366,11 +388,23 @@ fn upstream_request_shape(request: &Value) -> Value {
         } else {
             None
         },
+        "maxTokenValue": request
+            .get("max_completion_tokens")
+            .or_else(|| request.get("max_tokens"))
+            .and_then(Value::as_u64),
+        "messageCount": request
+            .get("messages")
+            .and_then(Value::as_array)
+            .map(Vec::len),
         "toolCount": tools.map_or(0, Vec::len),
         "toolFunctionFields": tool_function_fields,
         "toolChoiceType": tool_choice_type,
         "modelFamily": model_family,
         "stream": request.get("stream").and_then(Value::as_bool),
+        "thinkingPresent": request.get("thinking").is_some()
+            || request.get("enable_thinking").is_some()
+            || request.get("reasoning_effort").is_some(),
+        "terminalAssistantPrefill": terminal_assistant_prefill,
     })
 }
 
@@ -598,6 +632,7 @@ mod tests {
                 ("X-Title".to_owned(), "Claude Adapter".to_owned()),
                 ("User-Agent".to_owned(), "Claude-Adapter/2.0".to_owned()),
             ])),
+            upstream_capabilities: Default::default(),
         };
 
         let headers = build_default_headers(&config).unwrap();
@@ -617,6 +652,7 @@ mod tests {
             api_key: Some("secret".to_owned()),
             api_key_env: None,
             upstream_headers: None,
+            upstream_capabilities: Default::default(),
         };
 
         let headers = build_default_headers(&config).unwrap();
@@ -638,6 +674,7 @@ mod tests {
                 api_key: Some("secret".to_owned()),
                 api_key_env: None,
                 upstream_headers: Some(HashMap::from([(name.to_owned(), "wrong".to_owned())])),
+                upstream_capabilities: Default::default(),
             };
 
             let error = build_default_headers(&config).unwrap_err();
@@ -653,6 +690,7 @@ mod tests {
             api_key: Some("secret\nvalue".to_owned()),
             api_key_env: None,
             upstream_headers: None,
+            upstream_capabilities: Default::default(),
         };
 
         let error = build_default_headers(&config).unwrap_err();
@@ -699,6 +737,11 @@ mod tests {
             assert!(!serialized.contains(secret), "shape leaked {secret}");
         }
         assert_eq!(shape["modelFamily"], "glm-5");
+        assert_eq!(shape["maxTokenField"], "max_tokens");
+        assert_eq!(shape["maxTokenValue"], 128);
+        assert_eq!(shape["messageCount"], 2);
+        assert_eq!(shape["thinkingPresent"], true);
+        assert_eq!(shape["terminalAssistantPrefill"], false);
         assert_eq!(shape["toolCount"], 1);
         assert_eq!(shape["toolChoiceType"], "auto");
         assert_eq!(shape["messageContentTypes"]["image_url"], 1);
@@ -727,5 +770,26 @@ mod tests {
         assert_eq!(record["error"]["status"], 406);
         assert_eq!(record["error"]["response"], "Not Acceptable");
         assert_eq!(record["upstreamRequestShape"], shape);
+
+        let namespaced_qwen = upstream_request_shape(&json!({
+            "model": "qwen/qwen3.6-35b-a3b",
+            "messages": [{"role": "user", "content": "secret"}],
+            "max_tokens": 64,
+            "stream": true,
+            "enable_thinking": true
+        }));
+        assert_eq!(namespaced_qwen["modelFamily"], "qwen3");
+        assert_eq!(namespaced_qwen["thinkingPresent"], true);
+        assert!(!namespaced_qwen.to_string().contains("secret"));
+
+        let terminal_prefill = upstream_request_shape(&json!({
+            "model": "model",
+            "messages": [
+                {"role": "user", "content": "secret user"},
+                {"role": "assistant", "content": "secret prefill"}
+            ]
+        }));
+        assert_eq!(terminal_prefill["terminalAssistantPrefill"], true);
+        assert!(!terminal_prefill.to_string().contains("secret"));
     }
 }

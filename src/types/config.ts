@@ -4,7 +4,14 @@ interface AdapterConfigBase {
     baseUrl: string;
     models: ModelConfig;
     upstreamHeaders?: Record<string, string>;
+    upstreamCapabilities?: UpstreamCapabilities;
     port?: number;
+}
+
+export type AssistantPrefillMode = 'unsupported' | 'continue_final_message' | 'native';
+
+export interface UpstreamCapabilities {
+    assistantPrefill: AssistantPrefillMode;
 }
 
 export type AdapterConfig = AdapterConfigBase & (

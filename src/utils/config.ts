@@ -48,6 +48,10 @@ export function saveConfig(config: AdapterConfig): void {
     normalizedConfig.upstreamHeaders = config.upstreamHeaders;
   }
 
+  if (config.upstreamCapabilities !== undefined) {
+    normalizedConfig.upstreamCapabilities = config.upstreamCapabilities;
+  }
+
   if (config.port !== undefined) {
     normalizedConfig.port = config.port;
   }

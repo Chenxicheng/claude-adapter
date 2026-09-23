@@ -45,7 +45,9 @@ Upstream requests explicitly send `Accept: application/json`, `Content-Type: app
 
 Client tools map only `name`, `description`, and `input_schema`. Tool choices map as `auto → auto`, `any → required`, named `tool → function`, and other values → `auto`, matching the TypeScript converter. Tool-result text becomes `role=tool` messages in input order.
 
-For GPT-5 and OpenAI o-series models, `output_config.effort` and Anthropic thinking budgets map to the same `reasoning_effort` values as the TypeScript converter. GLM/Qwen retain their provider-specific options and tool-turn `reasoning_content`. Other historical thinking is not forwarded; a thinking-only historical turn becomes an assistant message with null content, matching TypeScript wire behavior. `output_config.format` and `metadata.user_id` are not forwarded. Stop arrays, including empty arrays, are forwarded as `stop`.
+For GPT-5 and OpenAI o-series models, `output_config.effort` and Anthropic thinking budgets map to the same `reasoning_effort` values as the TypeScript converter. GLM/Qwen retain their provider-specific options and tool-turn `reasoning_content`. Model-family detection uses the final provider-path segment, so `qwen3...` and `qwen/qwen3...` have identical Qwen behavior without matching unrelated model names. Other historical thinking is not forwarded; a thinking-only historical turn becomes an assistant message with null content, matching TypeScript wire behavior. `output_config.format` and `metadata.user_id` are not forwarded. Stop arrays, including empty arrays, are forwarded as `stop`.
+
+Anthropic defines a final assistant message as a response prefill, but standard OpenAI Chat Completions defines assistant input as prior model output and has no portable continuation flag. The parity converter still filters the established short JSON-start prefills and otherwise preserves assistant content as history; it does not silently delete arbitrary prefills, invent a user continuation message, or send provider-specific extension fields. An upstream that cannot continue a final assistant message may therefore return a legal empty completion. The real E2E probe records `terminalAssistantPrefill` so this capability mismatch is distinguishable from lost SSE data.
 
 ### Images
 
@@ -72,6 +74,8 @@ Image blocks, including images nested in `tool_result`, currently return `400`. 
 
 Finish reasons map as `stop → end_turn`, `length → max_tokens`, `tool_calls → tool_use`, and `content_filter → refusal`. A refusal remains a normal text content block and includes `stop_details`. Unknown or legacy `function_call` finish reasons, missing tool names, and tool arguments that are not a complete JSON object are upstream protocol errors (`502`). The adapter cannot distinguish a natural OpenAI `stop` from a custom stop-sequence match, so `stop_sequence` remains `null`.
 
+An upstream `stop` with no text, reasoning, refusal, or tool call is represented as the legal Anthropic shape `content: []` with `stop_reason: end_turn`. The adapter records this as `outcome: empty_end_turn` instead of changing it into an API error. Application acceptance tests may still fail such a response when the requested task required text or a tool call; protocol validity and task success are separate decisions.
+
 ### Streaming response
 
 Streaming uses SSE and preserves Anthropic event order:
@@ -90,6 +94,8 @@ Upstream `reasoning_content || reasoning` becomes `thinking` / `thinking_delta`,
 Every content block receives a consecutive, unique index; deltas for parallel tools route by their upstream index, regardless of arrival order. Text after tools is streamed immediately in a new block. Each block stops exactly once. Tool names are accumulated against the request's declared names: an exact match with no longer matching name starts immediately. Ambiguous names wait only for that tool until finish_reason or [DONE]. Repeating the same complete name after a tool block starts leaves its identity unchanged; a different name fails. Missing IDs are generated at block start; unknown final names fail. Arguments are streamed unchanged, then validated as a complete JSON object before block closure; absent arguments mean `{}`.
 
 At finish_reason, content blocks close while the adapter continues reading final usage. `[DONE]`, or clean EOF following finish_reason, emits exactly one final message_delta/message_stop. An explicit `[DONE]` without finish_reason can infer end_turn/tool_use only for complete content. EOF without either terminal signal, malformed arguments, and transport errors emit `error` without successful final events. Empty choices, usage-only chunks, and content-free choice tails with no or the same finish_reason are accepted. New content or a conflicting finish_reason after finish_reason is an error.
+
+A streamed `stop` with no content blocks likewise completes with the normal `message_delta(stop_reason=end_turn)` and `message_stop` sequence and is logged as `empty_end_turn`. Zero-byte bodies, malformed JSON/SSE, missing required structures, damaged tool arguments, and streams without a legal terminal signal remain protocol errors. Usage-only chunks update counters only and never create content or a second completion.
 
 Streaming waits at four fixed boundaries: upstream response headers for 120 seconds, the first non-empty body bytes for 120 seconds after headers, the first emitted Anthropic event for 240 seconds after the same headers, and each later non-empty body chunk for 300 seconds while the downstream is polling. Header timeout returns an HTTP `504` error envelope. Once downstream SSE has started, timeout emits one `api_error` event and closes without `message_delta` or `message_stop`. Partial bytes, SSE comments, pings and empty frames do not satisfy the first Anthropic event deadline. The adapter does not pre-read or replay the first chunk, retry the POST, or synthesize heartbeats.
 
@@ -136,6 +142,9 @@ The existing configuration file remains compatible:
 {
   "baseUrl": "https://api.openai.com/v1",
   "apiKey": "...",
+  "upstreamCapabilities": {
+    "assistantPrefill": "unsupported"
+  },
   "models": {
     "opus": "gpt-4.1",
     "sonnet": "gpt-4.1",
@@ -154,6 +163,9 @@ To keep the secret out of `config.json`, configure only its environment variable
 {
   "baseUrl": "https://api.openai.com/v1",
   "apiKeyEnv": "OPENAI_API_KEY",
+  "upstreamCapabilities": {
+    "assistantPrefill": "unsupported"
+  },
   "models": {
     "opus": "gpt-4.1",
     "sonnet": "gpt-4.1",
@@ -165,6 +177,18 @@ To keep the secret out of `config.json`, configure only its environment variable
 Exactly one of `apiKey` and `apiKeyEnv` is required. Environment variable names must match
 `[A-Za-z_][A-Za-z0-9_]*`; the variable must exist and be non-empty when the wizard runs and whenever
 the adapter starts. The resolved value is never written back to configuration or logs.
+
+`upstreamCapabilities.assistantPrefill` accepts exactly three values:
+
+| Value | Request behavior |
+| ----- | ---------------- |
+| `unsupported` | Default. Reject a terminal Anthropic assistant prefill with `400 invalid_request_error` before contacting the upstream. |
+| `continue_final_message` | Preserve the terminal assistant message and add `continue_final_message: true`. |
+| `native` | Preserve the terminal assistant message without adding an extension. |
+
+This setting describes the upstream API contract, not a model family. The adapter never infers it
+from `baseUrl`, a provider name, or a model identifier. Existing configurations that omit the field
+remain valid and use `unsupported`.
 
 Configured upstream headers are forwarded unchanged. `Authorization`, `Accept`, `Content-Type`, `Content-Length`, and `Host` remain adapter-controlled and cannot be configured through the CLI.
 

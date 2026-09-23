@@ -634,6 +634,11 @@ impl StreamState {
             "provider": self.provider,
             "modelName": self.model,
             "streaming": true,
+            "outcome": if self.finish_reason.as_deref() == Some("stop") && !self.content_seen {
+                "empty_end_turn"
+            } else {
+                "usable"
+            },
             "usageStatus": if self.upstream_usage.is_some() { "complete" } else { "missing_final_chunk" }
         });
         if let Some(model) = &self.response_model {
@@ -918,6 +923,20 @@ mod tests {
                 .process_chunk(&chunk(json!({"content":"late"}), None))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn preserves_and_classifies_legal_empty_end_turn() {
+        let mut state = state(&[]);
+        let mut events = state
+            .process_chunk(&chunk(json!({}), Some("stop")))
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "message_start");
+        events.extend(state.finish(true).unwrap());
+        assert_eq!(events[1]["delta"]["stop_reason"], "end_turn");
+        assert_eq!(events[2]["type"], "message_stop");
+        assert_eq!(state.usage_record()["outcome"], "empty_end_turn");
     }
 
     #[test]

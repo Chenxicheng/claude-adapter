@@ -111,6 +111,9 @@ wizard defaults to direct entry. Environment-backed configuration stores only th
 {
   "baseUrl": "https://api.openai.com/v1",
   "apiKeyEnv": "OPENAI_API_KEY",
+  "upstreamCapabilities": {
+    "assistantPrefill": "unsupported"
+  },
   "models": {
     "opus": "gpt-4.1",
     "sonnet": "gpt-4.1",
@@ -121,6 +124,13 @@ wizard defaults to direct entry. Environment-backed configuration stores only th
 
 Set the variable before starting `claude-adapter`. After changing a system environment variable,
 restart the terminal and adapter. `apiKey` and `apiKeyEnv` are mutually exclusive.
+
+`upstreamCapabilities.assistantPrefill` declares an upstream protocol capability; it is never
+inferred from the URL or model name. Keep the default `unsupported` for standard OpenAI-compatible
+Chat Completions APIs. Use `continue_final_message` only when the upstream documents that extension,
+or `native` only when it natively continues a final assistant message. With `unsupported`, the
+adapter returns an actionable `400` before sending a request upstream instead of silently deleting
+Claude's prefill.
 
 ### CLI Options
 

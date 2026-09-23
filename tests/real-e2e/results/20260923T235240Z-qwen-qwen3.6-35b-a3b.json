@@ -1,0 +1,436 @@
+{
+  "schemaVersion": 3,
+  "upstreamCapabilities": {
+    "assistantPrefill": "native"
+  },
+  "tests": {
+    "upstream": {
+      "passed": true,
+      "status": 200,
+      "stream": true,
+      "eventCount": 3793,
+      "textDeltaCount": 1721,
+      "finishReason": "stop",
+      "inputTokens": null,
+      "outputTokens": null
+    },
+    "adapter": {
+      "passed": true,
+      "status": 200,
+      "eventTypes": [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop"
+      ],
+      "deltaTypes": [
+        "thinking_delta",
+        "text_delta"
+      ],
+      "stopReason": "end_turn",
+      "inputTokens": 33,
+      "outputTokens": 1818
+    },
+    "health": {
+      "passed": true,
+      "status": 200
+    },
+    "claudeText": {
+      "passed": false,
+      "exitCode": 0,
+      "expectedContentObserved": false,
+      "toolObserved": false,
+      "thinkingObserved": false,
+      "eventTypes": [
+        "message_start",
+        "message_delta",
+        "message_stop"
+      ],
+      "textDeltaCount": 0,
+      "textDeltaFirstMs": null,
+      "textDeltaLastMs": null,
+      "textDeltaMaxGapMs": 0,
+      "textBeforeUpstreamDone": false,
+      "emptyEndTurnObserved": true,
+      "upstreamCompletedMs": 1752,
+      "requestCount": 2,
+      "requestStream": true,
+      "requestStatus": 200,
+      "rustSent": 2,
+      "requestMatched": true,
+      "requests": [
+        {
+          "sequence": 2,
+          "outcome": "empty_end_turn",
+          "finishReasons": [
+            "stop"
+          ],
+          "textObserved": false,
+          "reasoningObserved": false,
+          "toolCallObserved": false
+        },
+        {
+          "sequence": 3,
+          "outcome": "empty_end_turn",
+          "finishReasons": [
+            "stop"
+          ],
+          "textObserved": false,
+          "reasoningObserved": false,
+          "toolCallObserved": false
+        }
+      ]
+    },
+    "matrix": {
+      "exactTextNonStream": {
+        "passed": false,
+        "status": 200,
+        "stream": false,
+        "responseChunkCount": 1,
+        "sseEventCount": 1,
+        "doneObserved": false,
+        "finishReasons": [
+          "stop"
+        ],
+        "usage": {
+          "prompt_tokens": 10134,
+          "completion_tokens": 1,
+          "total_tokens": 10135
+        },
+        "deltaFieldCounts": {
+          "role": 1,
+          "content": 1,
+          "reasoning_content": 1,
+          "tool_calls": 1
+        },
+        "unknownDeltaFields": [],
+        "textObserved": false,
+        "reasoningObserved": false,
+        "refusalObserved": false,
+        "toolCallObserved": false,
+        "outcome": "empty_end_turn",
+        "expectedTextObserved": false,
+        "expectedToolObserved": true
+      },
+      "readAuto": {
+        "passed": true,
+        "status": 200,
+        "stream": true,
+        "responseChunkCount": 49,
+        "sseEventCount": 48,
+        "doneObserved": true,
+        "finishReasons": [
+          "tool_calls"
+        ],
+        "usage": {
+          "prompt_tokens": 278,
+          "completion_tokens": 67,
+          "total_tokens": 345
+        },
+        "deltaFieldCounts": {
+          "role": 1,
+          "reasoning_content": 39,
+          "tool_calls": 7
+        },
+        "unknownDeltaFields": [],
+        "textObserved": false,
+        "reasoningObserved": true,
+        "refusalObserved": false,
+        "toolCallObserved": true,
+        "outcome": "usable",
+        "expectedTextObserved": true,
+        "expectedToolObserved": true
+      },
+      "readNamed": {
+        "passed": false,
+        "status": 400,
+        "stream": true,
+        "responseChunkCount": 1,
+        "sseEventCount": 1,
+        "doneObserved": false,
+        "finishReasons": [],
+        "usage": null,
+        "deltaFieldCounts": {},
+        "unknownDeltaFields": [],
+        "textObserved": false,
+        "reasoningObserved": false,
+        "refusalObserved": false,
+        "toolCallObserved": false,
+        "outcome": "protocol_error",
+        "expectedTextObserved": true,
+        "expectedToolObserved": false
+      }
+    },
+    "claudeRead": {
+      "passed": false,
+      "exitCode": 0,
+      "expectedContentObserved": false,
+      "toolObserved": false,
+      "thinkingObserved": false,
+      "eventTypes": [
+        "message_start",
+        "message_delta",
+        "message_stop"
+      ],
+      "textDeltaCount": 0,
+      "textDeltaFirstMs": null,
+      "textDeltaLastMs": null,
+      "textDeltaMaxGapMs": 0,
+      "textBeforeUpstreamDone": false,
+      "emptyEndTurnObserved": true,
+      "upstreamCompletedMs": 1712,
+      "requestCount": 2,
+      "requestStream": true,
+      "requestStatus": 200,
+      "rustSent": 2,
+      "requestMatched": true,
+      "requests": [
+        {
+          "sequence": 4,
+          "outcome": "empty_end_turn",
+          "finishReasons": [
+            "stop"
+          ],
+          "textObserved": false,
+          "reasoningObserved": false,
+          "toolCallObserved": false
+        },
+        {
+          "sequence": 5,
+          "outcome": "empty_end_turn",
+          "finishReasons": [
+            "stop"
+          ],
+          "textObserved": false,
+          "reasoningObserved": false,
+          "toolCallObserved": false
+        }
+      ]
+    }
+  },
+  "model": "qwen/qwen3.6-35b-a3b",
+  "passed": false,
+  "probe": {
+    "requestCount": 5,
+    "requests": [
+      {
+        "sequence": 1,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "stream": true,
+        "messageCount": 1,
+        "messageRoles": [
+          "user"
+        ],
+        "messageContentTypes": {
+          "string": 1
+        },
+        "toolCount": 0,
+        "toolChoiceType": null,
+        "maxTokenField": "max_tokens",
+        "maxTokenValue": 4096,
+        "thinkingPresent": false,
+        "terminalAssistantPrefill": false,
+        "status": 200,
+        "upstreamFirstByteMs": 123,
+        "upstreamCompletedMs": 18641,
+        "requestCompletedMs": 18641,
+        "responseChunkCount": 1818,
+        "sseEventCount": 1817,
+        "doneObserved": true,
+        "finishReasons": [
+          "stop"
+        ],
+        "usage": {
+          "prompt_tokens": 33,
+          "completion_tokens": 1818,
+          "total_tokens": 1851
+        },
+        "deltaFieldCounts": {
+          "role": 1,
+          "reasoning_content": 1345,
+          "content": 470
+        },
+        "unknownDeltaFields": [],
+        "textObserved": true,
+        "reasoningObserved": true,
+        "refusalObserved": false,
+        "toolCallObserved": false,
+        "outcome": "usable"
+      },
+      {
+        "sequence": 2,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "stream": true,
+        "messageCount": 3,
+        "messageRoles": [
+          "system",
+          "user",
+          "assistant"
+        ],
+        "messageContentTypes": {
+          "string": 2,
+          "text": 2
+        },
+        "toolCount": 12,
+        "toolChoiceType": null,
+        "maxTokenField": "max_tokens",
+        "maxTokenValue": 32000,
+        "thinkingPresent": true,
+        "terminalAssistantPrefill": true,
+        "status": 200,
+        "upstreamFirstByteMs": 7328,
+        "upstreamCompletedMs": 7329,
+        "requestCompletedMs": 7329,
+        "responseChunkCount": 3,
+        "sseEventCount": 2,
+        "doneObserved": true,
+        "finishReasons": [
+          "stop"
+        ],
+        "usage": {
+          "prompt_tokens": 10134,
+          "completion_tokens": 1,
+          "total_tokens": 10135
+        },
+        "deltaFieldCounts": {},
+        "unknownDeltaFields": [],
+        "textObserved": false,
+        "reasoningObserved": false,
+        "refusalObserved": false,
+        "toolCallObserved": false,
+        "outcome": "empty_end_turn"
+      },
+      {
+        "sequence": 3,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "stream": true,
+        "messageCount": 3,
+        "messageRoles": [
+          "system",
+          "user",
+          "assistant"
+        ],
+        "messageContentTypes": {
+          "string": 2,
+          "text": 3
+        },
+        "toolCount": 12,
+        "toolChoiceType": null,
+        "maxTokenField": "max_tokens",
+        "maxTokenValue": 32000,
+        "thinkingPresent": true,
+        "terminalAssistantPrefill": true,
+        "status": 200,
+        "upstreamFirstByteMs": 1751,
+        "upstreamCompletedMs": 1752,
+        "requestCompletedMs": 1752,
+        "responseChunkCount": 3,
+        "sseEventCount": 2,
+        "doneObserved": true,
+        "finishReasons": [
+          "stop"
+        ],
+        "usage": {
+          "prompt_tokens": 10153,
+          "completion_tokens": 1,
+          "total_tokens": 10154
+        },
+        "deltaFieldCounts": {},
+        "unknownDeltaFields": [],
+        "textObserved": false,
+        "reasoningObserved": false,
+        "refusalObserved": false,
+        "toolCallObserved": false,
+        "outcome": "empty_end_turn"
+      },
+      {
+        "sequence": 4,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "stream": true,
+        "messageCount": 3,
+        "messageRoles": [
+          "system",
+          "user",
+          "assistant"
+        ],
+        "messageContentTypes": {
+          "string": 2,
+          "text": 2
+        },
+        "toolCount": 12,
+        "toolChoiceType": null,
+        "maxTokenField": "max_tokens",
+        "maxTokenValue": 32000,
+        "thinkingPresent": true,
+        "terminalAssistantPrefill": true,
+        "status": 200,
+        "upstreamFirstByteMs": 1687,
+        "upstreamCompletedMs": 1688,
+        "requestCompletedMs": 1688,
+        "responseChunkCount": 3,
+        "sseEventCount": 2,
+        "doneObserved": true,
+        "finishReasons": [
+          "stop"
+        ],
+        "usage": {
+          "prompt_tokens": 10114,
+          "completion_tokens": 1,
+          "total_tokens": 10115
+        },
+        "deltaFieldCounts": {},
+        "unknownDeltaFields": [],
+        "textObserved": false,
+        "reasoningObserved": false,
+        "refusalObserved": false,
+        "toolCallObserved": false,
+        "outcome": "empty_end_turn"
+      },
+      {
+        "sequence": 5,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "stream": true,
+        "messageCount": 3,
+        "messageRoles": [
+          "system",
+          "user",
+          "assistant"
+        ],
+        "messageContentTypes": {
+          "string": 2,
+          "text": 3
+        },
+        "toolCount": 12,
+        "toolChoiceType": null,
+        "maxTokenField": "max_tokens",
+        "maxTokenValue": 32000,
+        "thinkingPresent": true,
+        "terminalAssistantPrefill": true,
+        "status": 200,
+        "upstreamFirstByteMs": 1711,
+        "upstreamCompletedMs": 1712,
+        "requestCompletedMs": 1712,
+        "responseChunkCount": 3,
+        "sseEventCount": 2,
+        "doneObserved": true,
+        "finishReasons": [
+          "stop"
+        ],
+        "usage": {
+          "prompt_tokens": 10133,
+          "completion_tokens": 1,
+          "total_tokens": 10134
+        },
+        "deltaFieldCounts": {},
+        "unknownDeltaFields": [],
+        "textObserved": false,
+        "reasoningObserved": false,
+        "refusalObserved": false,
+        "toolCallObserved": false,
+        "outcome": "empty_end_turn"
+      }
+    ]
+  }
+}

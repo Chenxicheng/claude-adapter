@@ -226,7 +226,10 @@
     },
     "expected": {
       "model": "gpt-4",
-      "messages": [{ "role": "user", "content": "Return JSON" }],
+      "messages": [
+        { "role": "user", "content": "Return JSON" },
+        { "role": "assistant", "content": "{" }
+      ],
       "stream": false,
       "max_tokens": 10,
       "tools": [

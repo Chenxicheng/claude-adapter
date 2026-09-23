@@ -81,7 +81,8 @@ describe('Config Utilities', () => {
                 upstreamHeaders: {
                     'HTTP-Referer': 'https://example.com',
                     'X-Title': 'Claude Adapter'
-                }
+                },
+                upstreamCapabilities: { assistantPrefill: 'continue_final_message' as const }
             };
             writeFileSync(join(ADAPTER_DIR, 'config.json'), JSON.stringify(config));
 
@@ -150,6 +151,18 @@ describe('Config Utilities', () => {
             const content = JSON.parse(readFileSync(join(ADAPTER_DIR, 'config.json'), 'utf-8'));
             expect(content.apiKeyEnv).toBe('OPENAI_API_KEY');
             expect(content.apiKey).toBeUndefined();
+        });
+
+        it('should preserve explicitly configured upstream capabilities', () => {
+            saveConfig({
+                baseUrl: 'https://api.test.com',
+                apiKey: 'key-123',
+                models: { opus: 'model-1', sonnet: 'model-2', haiku: 'model-3' },
+                upstreamCapabilities: { assistantPrefill: 'native' },
+            });
+
+            const content = JSON.parse(readFileSync(join(ADAPTER_DIR, 'config.json'), 'utf-8'));
+            expect(content.upstreamCapabilities).toEqual({ assistantPrefill: 'native' });
         });
 
         it('should create directory if not exists', () => {

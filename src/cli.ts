@@ -3,7 +3,7 @@
 import { Command } from 'commander';
 import inquirer from 'inquirer';
 import { join } from 'node:path';
-import { AdapterConfig } from './types/config';
+import { AdapterConfig, AssistantPrefillMode } from './types/config';
 import {
   getConfigDir,
   loadConfig,
@@ -255,6 +255,26 @@ async function promptForConfiguration(): Promise<AdapterConfig> {
   ]);
 
   const upstreamHeaders = parseUpstreamHeadersInput(upstreamHeadersAnswer.upstreamHeaders);
+  const capabilityAnswer = await inquirer.prompt<{ assistantPrefill: AssistantPrefillMode }>([
+    {
+      type: 'list',
+      name: 'assistantPrefill',
+      prefix,
+      message: 'Upstream assistant-prefill support:',
+      choices: [
+        {
+          name: 'Unsupported (standard OpenAI-compatible API)',
+          value: 'unsupported',
+        },
+        {
+          name: 'continue_final_message extension (vLLM/llama.cpp)',
+          value: 'continue_final_message',
+        },
+        { name: 'Native final-assistant continuation', value: 'native' },
+      ],
+      default: 'unsupported',
+    },
+  ]);
   const credentials =
     requiredAnswers.apiKeySource === 'environment'
       ? { apiKeyEnv: parseApiKeyEnvInput(requiredAnswers.apiKeyEnv) }
@@ -269,6 +289,9 @@ async function promptForConfiguration(): Promise<AdapterConfig> {
       haiku: haikuModel,
     },
     upstreamHeaders,
+    upstreamCapabilities: {
+      assistantPrefill: capabilityAnswer.assistantPrefill,
+    },
   };
 }
 

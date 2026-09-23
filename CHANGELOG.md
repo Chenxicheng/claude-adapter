@@ -21,15 +21,23 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ## [Unreleased]
 
+### Added
+
+- Add an explicit upstream assistant-prefill capability contract with safe `unsupported`, documented `continue_final_message`, and `native` modes.
+
 ### Fixed
 
 - Accept repeated identical tool names while streaming their arguments; continue rejecting a changed name.
 - Accept content-free choice tails and final usage after `finish_reason` without repeating downstream termination.
 - Bound streaming waits for upstream headers, first body bytes, first Anthropic event and later body idle periods; fail timed-out streams without a false successful termination.
+- Apply Qwen thinking and history conversion equally to bare and provider-namespaced model IDs.
+- Preserve legal empty `end_turn` responses while distinguishing them from malformed or truncated upstream responses.
 
 ### Changed
 
-- Verify real Claude Code streaming with isolated settings, a counted upstream route, and event arrival timing.
+- Verify real Claude Code streaming with isolated settings, a sanitized per-request probe, a fixed LM Studio text/tool matrix, and event arrival timing.
+- Distinguish terminal Anthropic assistant-prefill capability mismatches from adapter streaming failures without persisting the prefill content.
+- Reject unsupported terminal assistant prefills before upstream I/O instead of silently deleting content; preserve them exactly in explicitly selected extension or native modes.
 
 ## [2.0.0] — 2026-09-20
 

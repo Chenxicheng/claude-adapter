@@ -115,6 +115,7 @@ const cases = {
     done: false,
     text: 'complete',
   },
+  emptyEndTurn: { chunks: [chunk({}, 'stop')], empty: true },
   emptyChoice: { chunks: [{ choices: [] }, chunk({ content: 'answer' }, 'stop')], parity: true },
   postFinishEmpty: {
     chunks: [chunk({ content: 'answer' }, 'stop'), chunk({}, 'stop'), usage],
@@ -151,7 +152,9 @@ const cases = {
   },
 };
 const fixtures = JSON.parse(await readFile('bench/fixtures/response-conversion.json', 'utf8'));
+let upstreamRequestCount = 0;
 const upstream = http.createServer(async (request, response) => {
+  upstreamRequestCount++;
   const buffers = [];
   for await (const buffer of request) buffers.push(buffer);
   const body = JSON.parse(Buffer.concat(buffers));
@@ -227,6 +230,27 @@ try {
       .filter((name) => name !== 'look' || ['ambiguousName', 'fragmentedName'].includes(model))
       .map((name) => ({ name, input_schema: { type: 'object' } })),
   });
+  const requestsBeforePrefill = upstreamRequestCount;
+  const prefillResponse = await fetch(`${url}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: 'text',
+      max_tokens: 100,
+      messages: [
+        { role: 'user', content: 'Return JSON' },
+        { role: 'assistant', content: '{' },
+      ],
+    }),
+    signal: AbortSignal.timeout(10000),
+  });
+  assert.equal(prefillResponse.status, 400);
+  const prefillError = await prefillResponse.json();
+  assert.equal(prefillError.type, 'error');
+  assert.equal(prefillError.error.type, 'invalid_request_error');
+  assert.match(prefillError.error.message, /upstreamCapabilities\.assistantPrefill/);
+  assert.equal(upstreamRequestCount, requestsBeforePrefill);
+  completed++;
   for (const [name, scenario] of Object.entries(cases)) {
     const response = await fetch(`${url}/v1/messages`, {
       method: 'POST',
@@ -265,6 +289,7 @@ try {
       }
       if (scenario.text)
         assert.equal(result.blocks.map((block) => block.text ?? '').join(''), scenario.text);
+      if (scenario.empty) assert.deepEqual(result.blocks, []);
       if (scenario.name)
         assert.equal(result.blocks.find((block) => block.type === 'tool_use').name, scenario.name);
       if (scenario.reason) assert.equal(result.stopReason, scenario.reason);

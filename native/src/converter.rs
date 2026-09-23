@@ -5,7 +5,7 @@ use rand::Rng;
 use serde_json::{Map, Value, json};
 use url::Url;
 
-use crate::error::AppError;
+use crate::{config::AssistantPrefillMode, error::AppError};
 
 const BILLING_HEADER: &str = "x-anthropic-billing-header:";
 const ASSISTANT_PREFILL_TOKENS: &[&str] = &["{", "[", "```", "{\"", "[{"];
@@ -226,10 +226,26 @@ fn validate_unit_interval(object: &Map<String, Value>, field: &str, errors: &mut
     }
 }
 
-pub fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> {
+#[cfg(test)]
+fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> {
+    convert_request_with_mode(body, base_url, AssistantPrefillMode::Unsupported)
+}
+
+pub fn convert_request_with_mode(
+    body: &Value,
+    base_url: &str,
+    assistant_prefill_mode: AssistantPrefillMode,
+) -> Result<Value, AppError> {
     validate_request(body)?;
     let request = body.as_object().expect("validated request object");
     let model = request["model"].as_str().expect("validated model");
+    let source_messages = request["messages"].as_array().expect("validated messages");
+    let terminal_assistant_prefill = source_messages.last().is_some_and(has_assistant_prefill);
+    if terminal_assistant_prefill && assistant_prefill_mode == AssistantPrefillMode::Unsupported {
+        return Err(AppError::bad_request(
+            "Terminal assistant prefill is not supported by the configured upstream. Set upstreamCapabilities.assistantPrefill to \"continue_final_message\" only for an upstream that implements that extension, or to \"native\" only for an upstream that natively continues a final assistant message",
+        ));
+    }
     let mut messages = Vec::new();
 
     if let Some(system) = request.get("system") {
@@ -242,17 +258,13 @@ pub fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> 
 
     let mut ids = IdContext::default();
     let preserve_reasoning = is_glm5(model) || is_qwen3(model);
-    for (message_index, message) in request["messages"]
-        .as_array()
-        .expect("validated messages")
-        .iter()
-        .enumerate()
-    {
+    for (message_index, message) in source_messages.iter().enumerate() {
         messages.extend(convert_message(
             message,
             message_index,
             &mut ids,
             preserve_reasoning,
+            terminal_assistant_prefill && message_index + 1 == source_messages.len(),
         )?);
     }
     if messages.is_empty() {
@@ -297,7 +309,29 @@ pub fn convert_request(body: &Value, base_url: &str) -> Result<Value, AppError> 
         output.insert("tool_choice".into(), convert_tool_choice(choice)?);
     }
     apply_model_options(request, &mut output, model)?;
+    if terminal_assistant_prefill
+        && assistant_prefill_mode == AssistantPrefillMode::ContinueFinalMessage
+    {
+        output.insert("continue_final_message".into(), Value::Bool(true));
+    }
     Ok(Value::Object(output))
+}
+
+fn has_assistant_prefill(message: &Value) -> bool {
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return false;
+    }
+    match message.get("content") {
+        Some(Value::String(content)) => !content.is_empty(),
+        Some(Value::Array(blocks)) => blocks.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("text")
+                && block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.is_empty())
+        }),
+        _ => false,
+    }
 }
 
 fn copy_fields(source: &Map<String, Value>, target: &mut Map<String, Value>, fields: &[&str]) {
@@ -342,13 +376,14 @@ fn convert_message(
     message_index: usize,
     ids: &mut IdContext,
     preserve_reasoning: bool,
+    preserve_assistant_prefill: bool,
 ) -> Result<Vec<Value>, AppError> {
     let role = message.get("role").and_then(Value::as_str).unwrap_or("");
     let Some(content) = message.get("content").filter(|content| !content.is_null()) else {
         return Ok(Vec::new());
     };
     if let Some(content) = content.as_str() {
-        if role != "user" && is_assistant_prefill(content) {
+        if role != "user" && !preserve_assistant_prefill && is_assistant_prefill(content) {
             return Ok(Vec::new());
         }
         let role = if role == "user" { "user" } else { "assistant" };
@@ -360,7 +395,8 @@ fn convert_message(
         "user" => convert_user_blocks(blocks, message_index, ids),
         _ => {
             let converted = convert_assistant_blocks(blocks, ids, preserve_reasoning)?;
-            if converted.get("tool_calls").is_none()
+            if !preserve_assistant_prefill
+                && converted.get("tool_calls").is_none()
                 && converted
                     .get("content")
                     .and_then(Value::as_str)
@@ -971,7 +1007,10 @@ fn is_glm52(model: &str) -> bool {
     normalized(model).starts_with("glm-5.2")
 }
 fn is_qwen3(model: &str) -> bool {
-    normalized(model).starts_with("qwen3")
+    normalized(model)
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.starts_with("qwen3"))
 }
 fn is_azure(base_url: &str) -> bool {
     Url::parse(base_url)
@@ -992,7 +1031,12 @@ mod tests {
             serde_json::from_str(include_str!("../../bench/fixtures/request-conversion.json"))
                 .unwrap();
         for fixture in fixtures.as_array().unwrap() {
-            let actual = convert_request(&fixture["input"], "https://api.openai.com/v1").unwrap();
+            let actual = convert_request_with_mode(
+                &fixture["input"],
+                "https://api.openai.com/v1",
+                AssistantPrefillMode::Native,
+            )
+            .unwrap();
             assert_eq!(actual, fixture["expected"], "fixture {}", fixture["name"]);
         }
     }
@@ -1009,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn filters_prefill_and_maps_tool_controls() {
+    fn enforces_assistant_prefill_capability_and_maps_tool_controls() {
         let body = json!({
             "model": "gpt-4",
             "max_tokens": 10,
@@ -1032,11 +1076,28 @@ mod tests {
             }
         });
         validate_request(&body).unwrap();
-        let converted = convert_request(&body, "https://api.openai.com/v1").unwrap();
+        let error = convert_request(&body, "https://api.openai.com/v1").unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(
+            error
+                .message
+                .contains("upstreamCapabilities.assistantPrefill")
+        );
+
+        let converted = convert_request_with_mode(
+            &body,
+            "https://api.openai.com/v1",
+            AssistantPrefillMode::ContinueFinalMessage,
+        )
+        .unwrap();
         assert_eq!(
             converted["messages"],
-            json!([{"role": "user", "content": "Return JSON"}])
+            json!([
+                {"role": "user", "content": "Return JSON"},
+                {"role": "assistant", "content": "{"}
+            ])
         );
+        assert_eq!(converted["continue_final_message"], true);
         assert!(converted["tools"][0]["function"].get("strict").is_none());
         assert_eq!(converted["tool_choice"]["function"]["name"], "lookup");
         assert!(converted.get("parallel_tool_calls").is_none());
@@ -1045,8 +1106,26 @@ mod tests {
             "model": "gpt-4", "max_tokens": 10,
             "messages": [{"role": "assistant", "content": "🙂🙂"}]
         });
-        let converted = convert_request(&unicode, "https://api.openai.com/v1").unwrap();
+        let converted = convert_request_with_mode(
+            &unicode,
+            "https://api.openai.com/v1",
+            AssistantPrefillMode::Native,
+        )
+        .unwrap();
         assert_eq!(converted["messages"][0]["content"], "🙂🙂");
+        assert!(converted.get("continue_final_message").is_none());
+
+        let ordinary = json!({
+            "model": "gpt-4", "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+        let converted = convert_request_with_mode(
+            &ordinary,
+            "https://api.openai.com/v1",
+            AssistantPrefillMode::ContinueFinalMessage,
+        )
+        .unwrap();
+        assert!(converted.get("continue_final_message").is_none());
     }
 
     #[test]
@@ -1085,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_but_omits_structured_output_with_assistant_prefill() {
+    fn validates_structured_output_and_preserves_native_assistant_prefill() {
         let body = json!({
             "model": "gpt-5", "max_tokens": 10,
             "messages": [
@@ -1096,10 +1175,18 @@ mod tests {
                 "format": {"type": "json_schema", "schema": {"type": "object"}}
             }
         });
-        let converted = convert_request(&body, "https://api.openai.com/v1").unwrap();
+        let converted = convert_request_with_mode(
+            &body,
+            "https://api.openai.com/v1",
+            AssistantPrefillMode::Native,
+        )
+        .unwrap();
         assert_eq!(
             converted["messages"],
-            json!([{"role": "user", "content": "Return JSON"}])
+            json!([
+                {"role": "user", "content": "Return JSON"},
+                {"role": "assistant", "content": "{"}
+            ])
         );
         assert!(converted.get("response_format").is_none());
 
@@ -1107,7 +1194,13 @@ mod tests {
             "model": "gpt-4", "max_tokens": 10,
             "messages": [{"role": "assistant", "content": "```"}]
         });
-        assert!(convert_request(&only_prefill, "https://api.openai.com/v1").is_err());
+        let converted = convert_request_with_mode(
+            &only_prefill,
+            "https://api.openai.com/v1",
+            AssistantPrefillMode::Native,
+        )
+        .unwrap();
+        assert_eq!(converted["messages"][0]["content"], "```");
     }
 
     #[test]
@@ -1261,6 +1354,31 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_plain_and_namespaced_qwen3_models() {
+        for model in ["qwen3.6-35b-a3b", "qwen/qwen3.6-35b-a3b"] {
+            let body = json!({
+                "model": model,
+                "max_tokens": 10,
+                "stream": true,
+                "thinking": {"type": "enabled"},
+                "messages": [{"role": "user", "content": "hello"}]
+            });
+            let converted = convert_request(&body, "http://127.0.0.1:1234/v1").unwrap();
+            assert_eq!(converted["enable_thinking"], true, "{model}");
+        }
+
+        let unrelated = json!({
+            "model": "vendor/not-qwen3",
+            "max_tokens": 10,
+            "stream": true,
+            "thinking": {"type": "enabled"},
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+        let converted = convert_request(&unrelated, "http://127.0.0.1:1234/v1").unwrap();
+        assert!(converted.get("enable_thinking").is_none());
+    }
+
+    #[test]
     fn matches_shared_response_fixtures() {
         let fixtures: Value = serde_json::from_str(include_str!(
             "../../bench/fixtures/response-conversion.json"
@@ -1309,6 +1427,22 @@ mod tests {
             assert!(converted["usage"].get("output_tokens_details").is_none());
             assert_eq!(converted["usage"]["cache_read_input_tokens"], Value::Null);
         }
+    }
+
+    #[test]
+    fn preserves_legal_empty_end_turn() {
+        let response = json!({
+            "id": "chatcmpl_empty",
+            "choices": [{
+                "message": {"role": "assistant", "content": null},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3}
+        });
+        let converted = convert_response(&response, "model").unwrap();
+        assert_eq!(converted["content"], json!([]));
+        assert_eq!(converted["stop_reason"], "end_turn");
+        assert_eq!(converted["usage"]["output_tokens"], 3);
     }
 
     #[test]
