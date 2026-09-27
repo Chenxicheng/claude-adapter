@@ -42,7 +42,7 @@ This adapter effectively "tricks" Claude Code into communicating with models it 
 
 The adapter operates as a native Rust HTTP server that mimics the Anthropic API structure while forwarding requests to an upstream OpenAI-compatible target. One self-contained npm tarball includes the Linux x64 and Windows x64 binaries plus all production JavaScript dependencies, so it can be transferred and installed offline without Rust or registry access.
 
-For broad third-party compatibility, the native request converter follows the `main` TypeScript 1.2.2 wire behavior, including forwarding configured upstream headers such as `User-Agent`, `HTTP-Referer`, and provider-specific `X-*` headers. Image requests are intentionally rejected until the text/tool path is stable. When an upstream request is rejected, local error JSONL includes a sanitized field-level request shape without recording prompts, tool inputs, schemas, headers, or credentials.
+The native request converter translates Anthropic Messages into OpenAI-compatible Chat Completions, including user images and labeled tool-result images, and forwards configured upstream headers such as `User-Agent`, `HTTP-Referer`, and provider-specific `X-*` headers. The upstream model must support images to process them. When an upstream request is rejected, local error JSONL includes a sanitized field-level request shape without recording prompts, tool inputs, schemas, headers, or credentials.
 
 ```
 ┌─────────────┐      ┌─────────────────┐      ┌─────────────────┐

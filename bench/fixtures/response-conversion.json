@@ -15,7 +15,7 @@
       ],
       "usage": {
         "prompt_tokens": 5,
-        "completion_tokens": 2
+        "completion_tokens": 3
       }
     },
     "expected": {
@@ -33,7 +33,7 @@
       "stop_sequence": null,
       "usage": {
         "input_tokens": 5,
-        "output_tokens": 2
+        "output_tokens": 3
       }
     }
   },

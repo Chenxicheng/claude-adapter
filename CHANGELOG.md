@@ -21,6 +21,14 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ## [Unreleased]
 
+### Added
+
+- Convert user images to Chat image parts and carry tool-result images in labeled follow-up user messages.
+
+### Fixed
+
+- Preserve explicit tool choice and parallel-tool controls; reject unsupported input roles and result-affecting options instead of silently changing or dropping them.
+
 ## [2.1.0] — 2026-09-24
 
 ### Added

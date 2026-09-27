@@ -640,7 +640,6 @@ async function testAdapter(url, model) {
         },
       ],
       metadata: { user_id: 'real-e2e' },
-      output_config: { format: { type: 'json_schema', schema: { type: 'object' } } },
     }),
     signal: AbortSignal.timeout(180_000),
   });

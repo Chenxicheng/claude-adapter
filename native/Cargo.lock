@@ -171,6 +171,7 @@ version = "2.1.0"
 dependencies = [
  "async-stream",
  "axum",
+ "base64",
  "bytes",
  "chrono",
  "eventsource-stream",

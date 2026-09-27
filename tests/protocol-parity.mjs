@@ -153,11 +153,13 @@ const cases = {
 };
 const fixtures = JSON.parse(await readFile('bench/fixtures/response-conversion.json', 'utf8'));
 let upstreamRequestCount = 0;
+let lastOutboundRequest;
 const upstream = http.createServer(async (request, response) => {
   upstreamRequestCount++;
   const buffers = [];
   for await (const buffer of request) buffers.push(buffer);
   const body = JSON.parse(Buffer.concat(buffers));
+  lastOutboundRequest = body;
   if (!body.stream) {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify(fixtures[Number(body.model)].input));
@@ -251,6 +253,7 @@ try {
   assert.match(prefillError.error.message, /upstreamCapabilities\.assistantPrefill/);
   assert.equal(upstreamRequestCount, requestsBeforePrefill);
   completed++;
+  let streamedText;
   for (const [name, scenario] of Object.entries(cases)) {
     const response = await fetch(`${url}/v1/messages`, {
       method: 'POST',
@@ -266,6 +269,7 @@ try {
     } else {
       const actual = [];
       const result = await readAnthropicStream(response, (event) => actual.push(event));
+      if (name === 'text') streamedText = result;
       if (scenario.parity) {
         oracle.usedToolIds.clear();
         const expected = [];
@@ -309,6 +313,74 @@ try {
       actual,
       responseOracle.convertResponseToAnthropic(fixture.input, String(index))
     );
+    completed++;
+  }
+  assert.deepEqual(streamedText.blocks.map((block) => ({ type: block.type, text: block.text })),
+    fixtures[0].expected.content);
+  assert.equal(streamedText.stopReason, fixtures[0].expected.stop_reason);
+  assert.equal(streamedText.usage.input_tokens, fixtures[0].expected.usage.input_tokens);
+  assert.equal(streamedText.usage.output_tokens, fixtures[0].expected.usage.output_tokens);
+  completed++;
+  await client.messages.create({
+    model: '0', max_tokens: 100,
+    messages: [{ role: 'user', content: [
+      { type: 'text', text: 'Compare' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'T0s=' } },
+      { type: 'image', source: { type: 'url', url: 'https://example.com/b.png' } },
+    ] }],
+  });
+  assert.deepEqual(lastOutboundRequest.messages, [{ role: 'user', content: [
+    { type: 'text', text: 'Compare' },
+    { type: 'image_url', image_url: { url: 'data:image/png;base64,T0s=' } },
+    { type: 'image_url', image_url: { url: 'https://example.com/b.png' } },
+  ] }]);
+  completed++;
+  await client.messages.create({
+    model: '0', max_tokens: 100,
+    messages: [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'capture', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [
+        { type: 'text', text: 'Captured' },
+        { type: 'image', source: { type: 'url', url: 'https://example.com/screen.png' } },
+      ] }] },
+    ],
+  });
+  assert.deepEqual(lastOutboundRequest.messages.slice(-2), [
+    { role: 'tool', tool_call_id: 'toolu_1', content: 'Captured\n[Image output follows in the next user message.]' },
+    { role: 'user', content: [
+      { type: 'text', text: '[Image from tool_call_id: toolu_1]' },
+      { type: 'image_url', image_url: { url: 'https://example.com/screen.png' } },
+    ] },
+  ]);
+  completed++;
+  for (const source of [
+    { type: 'base64', media_type: 'image/png', data: '%%%' },
+    { type: 'file_id', file_id: 'file_1' },
+  ]) {
+    const previousCount = upstreamRequestCount;
+    const response = await fetch(`${url}/v1/messages`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: '0', max_tokens: 100,
+        messages: [{ role: 'user', content: [{ type: 'image', source }] }] }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(upstreamRequestCount, previousCount);
+    completed++;
+  }
+  for (const body of [
+    { messages: [{ role: 'system', content: 'wrong role' }] },
+    { messages: [{ role: 'user', content: [{ type: 'document', source: {} }] }] },
+    { output_config: { format: { type: 'json_schema', schema: { type: 'object' } } } },
+    { tools: [{ name: 'lookup', input_schema: { type: 'object' }, strict: true }] },
+  ]) {
+    const previousCount = upstreamRequestCount;
+    const response = await fetch(`${url}/v1/messages`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: '0', max_tokens: 100,
+        messages: [{ role: 'user', content: 'test' }], ...body }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(upstreamRequestCount, previousCount);
     completed++;
   }
   console.log(JSON.stringify({ passed: completed, oracle: '8a19608', sdk: '0.71.2', errors: 0 }));

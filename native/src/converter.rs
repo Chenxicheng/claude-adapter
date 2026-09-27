@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
+use std::io;
 
 use axum::http::StatusCode;
+use base64::{engine::general_purpose::STANDARD, read::DecoderReader};
 use rand::Rng;
 use serde_json::{Map, Value, json};
 use url::Url;
@@ -64,14 +66,10 @@ fn validate_messages(messages: &[Value], errors: &mut Vec<String>) {
             continue;
         };
         let role = message.get("role").and_then(Value::as_str);
-        match role {
-            Some(role) if !role.is_empty() => {}
-            None => errors.push(format!(
-                "messages[{message_index}].role: role is required and must be a string"
-            )),
-            Some(_) => errors.push(format!(
-                "messages[{message_index}].role: role is required and must be a string"
-            )),
+        if !matches!(role, Some("user" | "assistant")) {
+            errors.push(format!(
+                "messages[{message_index}].role: role must be user or assistant"
+            ));
         }
         match message.get("content") {
             None | Some(Value::Null) => {}
@@ -116,13 +114,15 @@ fn validate_content_block(
     };
     match (role == Some("user"), kind) {
         (_, "text") => validate_text_block(block, field, errors),
-        (_, "image") => validate_image_block(block, field, errors),
+        (true, "image") => validate_image_block(block, field, errors),
+        (_, "image") => errors.push(format!("{field}: image blocks require a user message")),
         (true, "tool_result") => validate_tool_result(block, field, errors),
         (false, "tool_use") => validate_tool_use(block, field, errors),
         (false, "thinking") if block.get("thinking").and_then(Value::as_str).is_none() => {
             errors.push(format!("{field}.thinking: thinking must be a string"));
         }
-        _ => {}
+        (false, "thinking" | "redacted_thinking") => {}
+        _ => errors.push(format!("{field}.type: unsupported content block type")),
     }
 }
 
@@ -134,11 +134,76 @@ fn validate_text_block(block: &Map<String, Value>, field: &str, errors: &mut Vec
     }
 }
 
-fn validate_image_block(_block: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
-    errors.push(format!("{field}: image input is not supported"));
+fn validate_image_block(block: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
+    let Some(source) = block.get("source").and_then(Value::as_object) else {
+        errors.push(format!("{field}.source: image source must be an object"));
+        return;
+    };
+    match source.get("type").and_then(Value::as_str) {
+        Some("base64") => {
+            if !matches!(
+                source.get("media_type").and_then(Value::as_str),
+                Some("image/jpeg" | "image/png" | "image/gif" | "image/webp")
+            ) {
+                errors.push(format!(
+                    "{field}.source.media_type: unsupported image media type"
+                ));
+            }
+            let data = source.get("data").and_then(Value::as_str);
+            if data.is_none_or(str::is_empty)
+                || io::copy(
+                    &mut DecoderReader::new(data.unwrap_or_default().as_bytes(), &STANDARD),
+                    &mut io::sink(),
+                )
+                .is_err()
+            {
+                errors.push(format!("{field}.source.data: invalid base64 image data"));
+            }
+        }
+        Some("url") => {
+            let valid = source
+                .get("url")
+                .and_then(Value::as_str)
+                .and_then(|value| Url::parse(value).ok())
+                .is_some_and(|url| {
+                    matches!(url.scheme(), "http" | "https") && url.host().is_some()
+                });
+            if !valid {
+                errors.push(format!(
+                    "{field}.source.url: image URL must be HTTP or HTTPS"
+                ));
+            }
+        }
+        _ => errors.push(format!(
+            "{field}.source.type: unsupported image source type"
+        )),
+    }
+}
+
+fn convert_image_block(block: &Value) -> Value {
+    let source = &block["source"];
+    let url = if source["type"] == "base64" {
+        format!(
+            "data:{};base64,{}",
+            source["media_type"].as_str().expect("validated media type"),
+            source["data"].as_str().expect("validated image data")
+        )
+    } else {
+        source["url"]
+            .as_str()
+            .expect("validated image URL")
+            .to_owned()
+    };
+    json!({"type": "image_url", "image_url": {"url": url}})
 }
 
 fn validate_tool_result(block: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
+    if block
+        .get("content")
+        .is_some_and(|content| !content.is_null() && !content.is_string() && !content.is_array())
+    {
+        errors.push(format!("{field}.content: must be a string or array"));
+    }
     if block
         .get("tool_use_id")
         .and_then(Value::as_str)
@@ -164,7 +229,9 @@ fn validate_tool_result(block: &Map<String, Value>, field: &str, errors: &mut Ve
             match part.get("type").and_then(Value::as_str) {
                 Some("text") => validate_text_block(part, &part_field, errors),
                 Some("image") => validate_image_block(part, &part_field, errors),
-                Some(_) => {}
+                Some(_) => errors.push(format!(
+                    "{part_field}.type: unsupported tool result block type"
+                )),
                 None => errors.push(format!("{part_field}.type: content block type is required")),
             }
         }
@@ -238,6 +305,22 @@ pub fn convert_request_with_mode(
 ) -> Result<Value, AppError> {
     validate_request(body)?;
     let request = body.as_object().expect("validated request object");
+    for field in ["top_k", "service_tier", "mcp_servers", "container"] {
+        if request.get(field).is_some_and(|value| !value.is_null()) {
+            return Err(AppError::bad_request(format!(
+                "{field}: not supported by Chat Completions conversion"
+            )));
+        }
+    }
+    if request
+        .get("output_config")
+        .and_then(|value| value.get("format"))
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(AppError::bad_request(
+            "output_config.format: structured output conversion is not supported",
+        ));
+    }
     let model = request["model"].as_str().expect("validated model");
     let source_messages = request["messages"].as_array().expect("validated messages");
     let terminal_assistant_prefill = source_messages.last().is_some_and(has_assistant_prefill);
@@ -307,6 +390,12 @@ pub fn convert_request_with_mode(
     }
     if let Some(choice) = request.get("tool_choice") {
         output.insert("tool_choice".into(), convert_tool_choice(choice)?);
+        if let Some(disabled) = choice.get("disable_parallel_tool_use") {
+            let disabled = disabled.as_bool().ok_or_else(|| {
+                AppError::bad_request("tool_choice.disable_parallel_tool_use: must be a boolean")
+            })?;
+            output.insert("parallel_tool_calls".into(), Value::Bool(!disabled));
+        }
     }
     apply_model_options(request, &mut output, model)?;
     if terminal_assistant_prefill
@@ -417,23 +506,19 @@ fn is_assistant_prefill(content: &str) -> bool {
 
 fn convert_user_blocks(
     blocks: &[Value],
-    message_index: usize,
+    _message_index: usize,
     ids: &mut IdContext,
 ) -> Result<Vec<Value>, AppError> {
     let mut tool_messages = Vec::new();
     let mut user_parts = Vec::new();
 
-    for (block_index, block) in blocks.iter().enumerate() {
+    for block in blocks {
         match block.get("type").and_then(Value::as_str) {
             Some("text") => user_parts.push(json!({
                 "type": "text",
                 "text": block.get("text").and_then(Value::as_str).expect("validated text")
             })),
-            Some("image") => {
-                return Err(AppError::bad_request(format!(
-                    "messages[{message_index}].content[{block_index}]: image input is not supported"
-                )));
-            }
+            Some("image") => user_parts.push(convert_image_block(block)),
             Some("tool_result") => {
                 let original_id = block
                     .get("tool_use_id")
@@ -441,13 +526,23 @@ fn convert_user_blocks(
                     .expect("validated tool_use_id");
                 let resolved_id = resolve_tool_result_id(original_id, ids)
                     .unwrap_or_else(|| original_id.to_owned());
-                let text = extract_tool_result(block, message_index, block_index)?;
+                let (text, images) = extract_tool_result(block);
                 let is_error = block.get("is_error").and_then(Value::as_bool) == Some(true);
-                let text = if is_error {
+                let mut text = if is_error {
                     format!("Error: {text}")
                 } else {
                     text
                 };
+                if !images.is_empty() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str("[Image output follows in the next user message.]");
+                    user_parts.push(json!({"type": "text", "text": format!(
+                        "[Image from tool_call_id: {resolved_id}]"
+                    )}));
+                    user_parts.extend(images);
+                }
                 tool_messages.push(json!({
                     "role": "tool",
                     "tool_call_id": resolved_id,
@@ -470,16 +565,13 @@ fn convert_user_blocks(
     Ok(result)
 }
 
-fn extract_tool_result(
-    block: &Value,
-    message_index: usize,
-    block_index: usize,
-) -> Result<String, AppError> {
+fn extract_tool_result(block: &Value) -> (String, Vec<Value>) {
     match block.get("content") {
-        Some(Value::String(text)) => Ok(text.clone()),
+        Some(Value::String(text)) => (text.clone(), Vec::new()),
         Some(Value::Array(parts)) => {
             let mut text = Vec::new();
-            for (part_index, part) in parts.iter().enumerate() {
+            let mut images = Vec::new();
+            for part in parts {
                 match part.get("type").and_then(Value::as_str) {
                     Some("text") => text.push(
                         part.get("text")
@@ -487,18 +579,14 @@ fn extract_tool_result(
                             .expect("validated text")
                             .to_owned(),
                     ),
-                    Some("image") => {
-                        return Err(AppError::bad_request(format!(
-                            "messages[{message_index}].content[{block_index}].content[{part_index}]: image input is not supported"
-                        )));
-                    }
+                    Some("image") => images.push(convert_image_block(part)),
                     _ => {}
                 }
             }
-            Ok(text.join("\n"))
+            (text.join("\n"), images)
         }
-        None | Some(Value::Null) => Ok(String::new()),
-        Some(_) => Ok(String::new()),
+        None | Some(Value::Null) => (String::new(), Vec::new()),
+        Some(_) => (String::new(), Vec::new()),
     }
 }
 
@@ -621,13 +709,16 @@ fn convert_tool_choice(choice: &Value) -> Result<Value, AppError> {
     match choice.get("type").and_then(Value::as_str) {
         Some("auto") => Ok(Value::String("auto".into())),
         Some("any") => Ok(Value::String("required".into())),
-        Some("tool") => Ok(choice
+        Some("none") => Ok(Value::String("none".into())),
+        Some("tool") => choice
             .get("name")
             .and_then(Value::as_str)
             .filter(|name| !name.is_empty())
             .map(|name| json!({"type": "function", "function": {"name": name}}))
-            .unwrap_or_else(|| Value::String("auto".into()))),
-        _ => Ok(Value::String("auto".into())),
+            .ok_or_else(|| AppError::bad_request("tool_choice.name: required for a named tool")),
+        _ => Err(AppError::bad_request(
+            "tool_choice.type: unsupported tool choice",
+        )),
     }
 }
 
@@ -654,6 +745,14 @@ fn convert_tools(tools: &[Value]) -> Result<Value, AppError> {
                     "tools[{index}].input_schema: input_schema must be an object"
                 ))
             })?;
+        if tool
+            .get("strict")
+            .is_some_and(|strict| !strict.is_null() && strict != &Value::Bool(false))
+        {
+            return Err(AppError::bad_request(format!(
+                "tools[{index}].strict: strict tool schemas are not supported by this conversion"
+            )));
+        }
         let mut function = Map::from_iter([
             ("name".into(), Value::String(name.to_owned())),
             ("parameters".into(), schema.clone()),
@@ -732,6 +831,7 @@ fn openai_effort(
         Some("low") => return Some("low"),
         Some("medium") => return Some("medium"),
         Some("high") => return Some("high"),
+        Some("xhigh") => return Some("xhigh"),
         Some("max") => return Some("xhigh"),
         Some(_) => return None,
         None => {}
@@ -1066,7 +1166,6 @@ mod tests {
                 "name": "lookup",
                 "description": "Lookup a value",
                 "input_schema": {"type": "object"},
-                "strict": true,
                 "cache_control": {"type": "ephemeral"}
             }],
             "tool_choice": {
@@ -1100,7 +1199,25 @@ mod tests {
         assert_eq!(converted["continue_final_message"], true);
         assert!(converted["tools"][0]["function"].get("strict").is_none());
         assert_eq!(converted["tool_choice"]["function"]["name"], "lookup");
-        assert!(converted.get("parallel_tool_calls").is_none());
+        assert_eq!(converted["parallel_tool_calls"], false);
+        let mut parallel = body.clone();
+        parallel["tool_choice"]["disable_parallel_tool_use"] = json!(false);
+        let parallel = convert_request_with_mode(
+            &parallel,
+            "https://api.openai.com/v1",
+            AssistantPrefillMode::Native,
+        )
+        .unwrap();
+        assert_eq!(parallel["parallel_tool_calls"], true);
+        let mut strict = body.clone();
+        strict["tools"][0]["strict"] = json!(true);
+        let error = convert_request_with_mode(
+            &strict,
+            "https://api.openai.com/v1",
+            AssistantPrefillMode::Native,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("tools[0].strict"));
 
         let unicode = json!({
             "model": "gpt-4", "max_tokens": 10,
@@ -1164,7 +1281,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_structured_output_and_preserves_native_assistant_prefill() {
+    fn rejects_structured_output_and_preserves_native_assistant_prefill() {
         let body = json!({
             "model": "gpt-5", "max_tokens": 10,
             "messages": [
@@ -1175,20 +1292,14 @@ mod tests {
                 "format": {"type": "json_schema", "schema": {"type": "object"}}
             }
         });
-        let converted = convert_request_with_mode(
+        let error = convert_request_with_mode(
             &body,
             "https://api.openai.com/v1",
             AssistantPrefillMode::Native,
         )
-        .unwrap();
-        assert_eq!(
-            converted["messages"],
-            json!([
-                {"role": "user", "content": "Return JSON"},
-                {"role": "assistant", "content": "{"}
-            ])
-        );
-        assert!(converted.get("response_format").is_none());
+        .unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("output_config.format"));
 
         let only_prefill = json!({
             "model": "gpt-4", "max_tokens": 10,
@@ -1258,6 +1369,7 @@ mod tests {
     fn rejects_invalid_image_sources() {
         for source in [
             json!({"type": "base64", "media_type": "image/png", "data": "%%%"}),
+            json!({"type": "base64", "media_type": "image/png", "data": "T0s=AAA"}),
             json!({"type": "base64", "media_type": "image/svg+xml", "data": "PHN2Zz4="}),
             json!({"type": "url", "url": "ftp://example.com/a.png"}),
             json!({"type": "url", "url": "not a url"}),
@@ -1278,14 +1390,14 @@ mod tests {
             "messages": [{"role": "user", "content": [{
                 "type": "tool_result",
                 "tool_use_id": "toolu_1",
-                "content": [{"type": "image", "source": {"type": "url", "url": "https://example.com/a.png"}}]
+                "content": [{"type": "image", "source": {"type": "url", "url": "ftp://example.com/a.png"}}]
             }]}]
         });
         assert!(convert_request(&tool_image, "https://api.openai.com/v1").is_err());
     }
 
     #[test]
-    fn matches_main_typescript_request_behavior() {
+    fn rejects_unsupported_roles_and_generation_fields() {
         let body = json!({
             "model": "gpt-4",
             "max_tokens": 10,
@@ -1302,27 +1414,40 @@ mod tests {
             "tool_choice": {"type": "none"},
             "output_config": {"format": {"type": "json_schema", "schema": {"type": "object"}}}
         });
-        let converted = convert_request(&body, "https://api.openai.com/v1").unwrap();
-        assert_eq!(
-            converted,
-            json!({
-                "model": "gpt-4",
-                "messages": [
-                    {"role": "system", "content": "base"},
-                    {"role": "user", "content": "hello"},
-                    {"role": "assistant", "content": "mid-turn instruction"},
-                    {"role": "assistant", "content": "hook text"}
-                ],
-                "stream": false,
-                "max_tokens": 10,
-                "stop": [],
-                "tool_choice": "auto"
-            })
-        );
+        let error = convert_request(&body, "https://api.openai.com/v1").unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("role must be user or assistant"));
+        for field in ["top_k", "output_config.format"] {
+            let mut body = json!({
+                "model": "gpt-4", "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hello"}]
+            });
+            if field == "top_k" {
+                body["top_k"] = json!(40);
+            } else {
+                body["output_config"] =
+                    json!({"format": {"type": "json_schema", "schema": {"type": "object"}}});
+            }
+            assert!(
+                convert_request(&body, "https://api.openai.com/v1").is_err(),
+                "{field}"
+            );
+        }
     }
 
     #[test]
-    fn matches_main_tool_result_and_thinking_behavior() {
+    fn maps_explicit_xhigh_effort_for_openai_reasoning_models() {
+        let body = json!({
+            "model": "gpt-5", "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hello"}],
+            "output_config": {"effort": "xhigh"}
+        });
+        let converted = convert_request(&body, "https://api.openai.com/v1").unwrap();
+        assert_eq!(converted["reasoning_effort"], "xhigh");
+    }
+
+    #[test]
+    fn maps_tool_result_text_and_ignores_thinking_history() {
         let body = json!({
             "model": "gpt-4",
             "max_tokens": 10,
@@ -1331,7 +1456,6 @@ mod tests {
                 {"role": "user", "content": [
                     {"type": "tool_result", "tool_use_id": "unmatched", "content": [
                         {"type": "text", "text": "one"},
-                        {"type": "search_result", "content": []},
                         {"type": "text", "text": "two"}
                     ], "is_error": true},
                     {"type": "text", "text": "continue"}

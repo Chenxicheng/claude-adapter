@@ -11,7 +11,7 @@ Accepts an Anthropic Messages request and forwards it to the configured OpenAI-c
   model: string;
   max_tokens: number;
   messages: Array<{
-    role: 'user' | 'assistant' | 'system';
+    role: 'user' | 'assistant';
     content: string | ContentBlock[];
   }>;
   system?: string | ContentBlock[];
@@ -26,7 +26,7 @@ Accepts an Anthropic Messages request and forwards it to the configured OpenAI-c
     budget_tokens?: number;
   };
   output_config?: {
-    effort?: 'low' | 'medium' | 'high' | 'max';
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     format?: {
       type: 'json_schema';
       schema: Record<string, unknown>;
@@ -39,19 +39,21 @@ Accepts an Anthropic Messages request and forwards it to the configured OpenAI-c
 
 Every response includes `x-request-id`.
 
-Request conversion follows `main@8a19608` (TypeScript 1.2.2). `user` maps to OpenAI `user`; other non-empty string roles map to assistant history. Messages with missing or null content are skipped, and the same short assistant-prefill tokens are filtered. GPT-5 and OpenAI o-series models use `max_completion_tokens`; other models use `max_tokens`, with the existing Azure minimum adjustment. Required request shapes are validated, while unknown fields not converted by TypeScript are ignored instead of forwarded.
+Request conversion retains the established text/tool Chat Completions behavior where it matches the documented contracts. Only `user` and `assistant` input roles are accepted; unsupported result-bearing content blocks return `400` rather than becoming assistant history or disappearing. Historical `thinking` and `redacted_thinking` blocks keep the existing behavior described below. Messages with missing or null content are skipped, and the same short assistant-prefill tokens are filtered. GPT-5 and OpenAI o-series models use `max_completion_tokens`; other models use `max_tokens`, with the existing Azure minimum adjustment.
 
 Upstream requests explicitly send `Accept: application/json`, `Content-Type: application/json`, bearer authorization, `stream: true | false`, and an OpenAI JavaScript SDK-compatible user agent.
 
-Client tools map only `name`, `description`, and `input_schema`. Tool choices map as `auto → auto`, `any → required`, named `tool → function`, and other values → `auto`, matching the TypeScript converter. Tool-result text becomes `role=tool` messages in input order.
+Client tools map only `name`, `description`, and `input_schema`; `strict: true` returns `400` because this path does not rewrite schemas to satisfy Chat's strict subset. Tool choices map as `auto → auto`, `any → required`, `none → none`, and named `tool → function`; unsupported choices return `400`. An explicit `tool_choice.disable_parallel_tool_use` maps to the inverse Chat `parallel_tool_calls` value. Tool-result text becomes `role=tool` messages in input order.
 
-For GPT-5 and OpenAI o-series models, `output_config.effort` and Anthropic thinking budgets map to the same `reasoning_effort` values as the TypeScript converter. GLM/Qwen retain their provider-specific options and tool-turn `reasoning_content`. Model-family detection uses the final provider-path segment, so `qwen3...` and `qwen/qwen3...` have identical Qwen behavior without matching unrelated model names. Other historical thinking is not forwarded; a thinking-only historical turn becomes an assistant message with null content, matching TypeScript wire behavior. `output_config.format` and `metadata.user_id` are not forwarded. Stop arrays, including empty arrays, are forwarded as `stop`.
+For GPT-5 and OpenAI o-series models, `output_config.effort` and Anthropic thinking budgets map to the same `reasoning_effort` values as the TypeScript converter. GLM/Qwen retain their provider-specific options and tool-turn `reasoning_content`. Model-family detection uses the final provider-path segment, so `qwen3...` and `qwen/qwen3...` have identical Qwen behavior without matching unrelated model names. Other historical thinking is not forwarded; a thinking-only historical turn becomes an assistant message with null content. Explicit `output_config.format`, `top_k`, `service_tier`, `mcp_servers`, and `container` return `400` because this Chat path does not preserve their semantics. `cache_control` and `metadata.user_id` are ignored as hints or operational metadata; neither is forwarded. Stop arrays, including empty arrays, are forwarded as `stop`.
 
 Anthropic defines a final assistant message as a response prefill, but standard OpenAI Chat Completions defines assistant input as prior model output and has no portable continuation flag. The parity converter still filters the established short JSON-start prefills and otherwise preserves assistant content as history; it does not silently delete arbitrary prefills, invent a user continuation message, or send provider-specific extension fields. An upstream that cannot continue a final assistant message may therefore return a legal empty completion. The real E2E probe records `terminalAssistantPrefill` so this capability mismatch is distinguishable from lost SSE data.
 
 ### Images
 
-Image blocks, including images nested in `tool_result`, currently return `400`. Image conversion will be reintroduced only after the text/tool request path is stable.
+User image blocks map to Chat `image_url` parts in their original text/image order. HTTP(S) URLs pass through without a download; base64 JPEG, PNG, GIF, and WebP data becomes `data:<media_type>;base64,<data>`. Invalid and unsupported sources, including `file_id`, return `400`. The upstream model must support image input.
+
+Chat tool messages support text only. When a `tool_result` contains images, its text remains in the tool message with an image pointer; a following user multimodal message contains the images in order, each preceded by its resolved `tool_call_id`. This intentionally changes the image's message role and is an adapter policy, not lossless protocol equivalence.
 
 ### Non-streaming response
 
@@ -89,7 +91,7 @@ Streaming uses SSE and preserves Anthropic event order:
 
 `message_start.message.usage` uses numeric zero placeholders. Final `message_delta.usage.output_tokens` defaults to zero; `input_tokens` is omitted if no token counters arrived. With counters, missing individual counters default to zero, matching main@8a19608. Non-streaming counters also default to zero. Raw upstream JSONL usage remains authoritative and distinguishes missing usage from actual zero. Cache and reasoning token breakdowns are retained in JSONL, not synthesized into client usage.
 
-Upstream `reasoning_content || reasoning` becomes `thinking` / `thinking_delta`, including reasoning-only completions. No cryptographic `signature` is fabricated. This preserves the established Claude Code adapter behavior, not native Anthropic signature integrity. Reasoning after the first tool is ignored as in main. Reasoning text is not written to usage/error logs.
+Upstream `reasoning_content || reasoning` becomes `thinking` / `thinking_delta`, including reasoning-only completions. No cryptographic `signature` is fabricated. This preserves the established Claude Code display behavior; the unsigned block is not guaranteed to be replayable as native Anthropic signed thinking history. Reasoning after the first tool is ignored as in main. Reasoning text is not written to usage/error logs.
 
 Every content block receives a consecutive, unique index; deltas for parallel tools route by their upstream index, regardless of arrival order. Text after tools is streamed immediately in a new block. Each block stops exactly once. Tool names are accumulated against the request's declared names: an exact match with no longer matching name starts immediately. Ambiguous names wait only for that tool until finish_reason or [DONE]. Repeating the same complete name after a tool block starts leaves its identity unchanged; a different name fails. Missing IDs are generated at block start; unknown final names fail. Arguments are streamed unchanged, then validated as a complete JSON object before block closure; absent arguments mean `{}`.
 
