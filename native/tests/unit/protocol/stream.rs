@@ -97,6 +97,34 @@ fn matches_shared_fixture_and_main_usage() {
 }
 
 #[test]
+fn length_with_tool_calls_requires_complete_arguments() {
+    let mut complete = state(&["lookup"]);
+    let events = complete
+        .process_chunk(&chunk(
+            json!({"tool_calls": [call(0, "lookup", "{\"id\":1}")]}),
+            Some("length"),
+        ))
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event["type"] == "content_block_stop")
+    );
+    let final_events = complete.finish(false).unwrap();
+    assert_eq!(final_events[0]["delta"]["stop_reason"], "max_tokens");
+
+    let mut truncated = state(&["lookup"]);
+    assert!(
+        truncated
+            .process_chunk(&chunk(
+                json!({"tool_calls": [call(0, "lookup", "{\"id\":")]}),
+                Some("length"),
+            ))
+            .is_err()
+    );
+}
+
+#[test]
 fn emits_thinking_fallback_and_reasoning_only() {
     for empty in [Value::Null, json!("")] {
         let mut state = state(&[]);

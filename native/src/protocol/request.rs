@@ -12,7 +12,6 @@ use url::Url;
 use crate::{config::AssistantPrefillMode, error::AppError};
 
 const BILLING_HEADER: &str = "x-anthropic-billing-header:";
-const ASSISTANT_PREFILL_TOKENS: &[&str] = &["{", "[", "```", "{\"", "[{"];
 pub fn validate_request(body: &Value) -> Result<(), AppError> {
     let object = body
         .as_object()
@@ -344,7 +343,6 @@ pub fn convert_request_with_mode(
             message_index,
             &mut ids,
             preserve_reasoning,
-            terminal_assistant_prefill && message_index + 1 == source_messages.len(),
         )?);
     }
     if messages.is_empty() {
@@ -513,16 +511,12 @@ fn convert_message(
     message_index: usize,
     ids: &mut IdContext,
     preserve_reasoning: bool,
-    preserve_assistant_prefill: bool,
 ) -> Result<Vec<Value>, AppError> {
     let role = message.get("role").and_then(Value::as_str).unwrap_or("");
     let Some(content) = message.get("content").filter(|content| !content.is_null()) else {
         return Ok(Vec::new());
     };
     if let Some(content) = content.as_str() {
-        if role != "user" && !preserve_assistant_prefill && is_assistant_prefill(content) {
-            return Ok(Vec::new());
-        }
         let role = if role == "user" { "user" } else { "assistant" };
         return Ok(vec![json!({"role": role, "content": content})]);
     }
@@ -532,24 +526,9 @@ fn convert_message(
         "user" => convert_user_blocks(blocks, message_index, ids),
         _ => {
             let converted = convert_assistant_blocks(blocks, ids, preserve_reasoning)?;
-            if !preserve_assistant_prefill
-                && converted.get("tool_calls").is_none()
-                && converted
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .is_some_and(is_assistant_prefill)
-            {
-                Ok(Vec::new())
-            } else {
-                Ok(vec![converted])
-            }
+            Ok(vec![converted])
         }
     }
-}
-
-fn is_assistant_prefill(content: &str) -> bool {
-    let trimmed = content.trim();
-    ASSISTANT_PREFILL_TOKENS.contains(&trimmed) || trimmed.encode_utf16().count() <= 2
 }
 
 fn convert_user_blocks(

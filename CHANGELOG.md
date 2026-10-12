@@ -28,6 +28,8 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 ### Fixed
 
 - Preserve explicit tool choice and parallel-tool controls; reject unsupported input roles and result-affecting options instead of silently changing or dropping them.
+- Preserve short historical assistant messages and accept complete tool calls when a non-streaming response ends with `length`.
+- Restore the local benchmark preflight to the current request contract so it can produce a valid release baseline.
 
 ## [2.1.0] — 2026-09-24
 

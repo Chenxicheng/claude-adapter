@@ -14,6 +14,32 @@
     }
   },
   {
+    "name": "historical short assistant messages",
+    "input": {
+      "model": "gpt-4",
+      "max_tokens": 100,
+      "messages": [
+        { "role": "user", "content": "Acknowledge" },
+        { "role": "assistant", "content": "OK" },
+        { "role": "user", "content": "Continue" },
+        { "role": "assistant", "content": [{ "type": "text", "text": "{" }] },
+        { "role": "user", "content": "Finish" }
+      ]
+    },
+    "expected": {
+      "model": "gpt-4",
+      "messages": [
+        { "role": "user", "content": "Acknowledge" },
+        { "role": "assistant", "content": "OK" },
+        { "role": "user", "content": "Continue" },
+        { "role": "assistant", "content": "{" },
+        { "role": "user", "content": "Finish" }
+      ],
+      "stream": false,
+      "max_tokens": 100
+    }
+  },
+  {
     "name": "billing header and streaming usage",
     "input": {
       "model": "gpt-4",

@@ -103,6 +103,12 @@ fn preserves_refusal_without_inventing_a_content_block_type() {
 fn rejects_malformed_tool_calls() {
     for response in [
         json!({
+            "id": "chatcmpl_length",
+            "choices": [{"message": {"role": "assistant", "tool_calls": [{
+                "id": "toolu_1", "type": "function", "function": {"name": "lookup", "arguments": "{\"id\":"}
+            }]}, "finish_reason": "length"}]
+        }),
+        json!({
             "id": "chatcmpl_2",
             "choices": [{"message": {"role": "assistant", "tool_calls": [{
                 "id": "toolu_1", "type": "function", "function": {"name": "lookup", "arguments": "not json"}

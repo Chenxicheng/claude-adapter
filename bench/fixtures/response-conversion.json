@@ -93,5 +93,35 @@
         "output_tokens": 3
       }
     }
+  },
+  {
+    "name": "length with complete tool call",
+    "model": "claude-sonnet",
+    "input": {
+      "id": "chatcmpl_3",
+      "choices": [{
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [{
+            "id": "toolu_2",
+            "type": "function",
+            "function": { "name": "lookup", "arguments": "{\"id\":1}" }
+          }]
+        },
+        "finish_reason": "length"
+      }],
+      "usage": { "prompt_tokens": 7, "completion_tokens": 3 }
+    },
+    "expected": {
+      "id": "msg_chatcmpl_3",
+      "type": "message",
+      "role": "assistant",
+      "content": [{ "type": "tool_use", "id": "toolu_2", "name": "lookup", "input": { "id": 1 } }],
+      "model": "claude-sonnet",
+      "stop_reason": "max_tokens",
+      "stop_sequence": null,
+      "usage": { "input_tokens": 7, "output_tokens": 3 }
+    }
   }
 ]

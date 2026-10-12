@@ -145,7 +145,7 @@ pub fn convert_response(response: &Value, original_model: &str) -> Result<Value,
         .ok_or_else(|| upstream_protocol_error("response is missing finish_reason"))?;
     let mapped_finish = map_finish_reason(finish)?;
     let has_tools = content.iter().any(|block| block["type"] == "tool_use");
-    if (finish == "tool_calls") != has_tools {
+    if finish != "length" && (finish == "tool_calls") != has_tools {
         return Err(upstream_protocol_error(
             "response tool calls do not match finish_reason",
         ));

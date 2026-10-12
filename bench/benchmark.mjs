@@ -246,7 +246,8 @@ async function verifyProtocolScenarios(url, mock) {
       system: 'Base instruction.',
       messages: [
         { role: 'user', content: 'Reply with benchmark.' },
-        { role: 'system', content: 'Be concise.' },
+        { role: 'assistant', content: 'OK' },
+        { role: 'user', content: 'Continue.' },
       ],
       metadata: { user_id: 'benchmark-user' },
       output_config: { effort: 'high' },
@@ -261,7 +262,9 @@ async function verifyProtocolScenarios(url, mock) {
     firstChat.messages[0]?.content !== 'Base instruction.' ||
     firstChat.messages[1]?.role !== 'user' ||
     firstChat.messages[2]?.role !== 'assistant' ||
-    firstChat.messages[2]?.content !== 'Be concise.' ||
+    firstChat.messages[2]?.content !== 'OK' ||
+    firstChat.messages[3]?.role !== 'user' ||
+    firstChat.messages[3]?.content !== 'Continue.' ||
     firstChat.messages.some((message, index) => index > 0 && message.role === 'system') ||
     firstChat.max_tokens !== 128 ||
     firstChat.stream !== false ||
@@ -290,13 +293,10 @@ async function verifyProtocolScenarios(url, mock) {
       max_tokens: 128,
       messages: [{ role: 'user', content: '__reasoning_tool__' }],
       tools: [
-        { name: 'lookup', description: 'Lookup', input_schema: { type: 'object' }, strict: true },
+        { name: 'lookup', description: 'Lookup', input_schema: { type: 'object' } },
       ],
       tool_choice: { type: 'auto', disable_parallel_tool_use: true },
-      output_config: {
-        effort: 'high',
-        format: { type: 'json_schema', schema: { type: 'object' } },
-      },
+      output_config: { effort: 'high' },
     }),
   });
   const toolBody = await toolResponse.json();
@@ -310,7 +310,7 @@ async function verifyProtocolScenarios(url, mock) {
   if (!toolRequest.tools?.length) throw new Error('Tool request conversion preflight failed');
   if (
     'strict' in toolRequest.tools[0].function ||
-    'parallel_tool_calls' in toolRequest ||
+    toolRequest.parallel_tool_calls !== false ||
     'response_format' in toolRequest
   ) {
     throw new Error('TypeScript-compatible tool request shape preflight failed');

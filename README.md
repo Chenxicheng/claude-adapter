@@ -130,7 +130,8 @@ inferred from the URL or model name. Keep the default `unsupported` for standard
 Chat Completions APIs. Use `continue_final_message` only when the upstream documents that extension,
 or `native` only when it natively continues a final assistant message. With `unsupported`, the
 adapter returns an actionable `400` before sending a request upstream instead of silently deleting
-Claude's prefill.
+Claude's prefill. Earlier assistant messages, including short replies and JSON-start text, remain
+in the conversation history.
 
 ### CLI Options
 
