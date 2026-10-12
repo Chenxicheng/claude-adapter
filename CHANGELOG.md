@@ -6,20 +6,7 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 
 ---
 
-## [2.0.1] — 2026-09-21
-
-### Fixed
-
-- Restore main's streaming/non-streaming thinking and client usage shapes, including reasoning-only responses and reasoning-field fallback.
-- Stream independent tool calls immediately when their declared names are unambiguous; preserve fragmented names, tool/text indices and text after tools.
-- Close each block once, retain final usage, distinguish explicit completion from truncated EOF, and reject damaged tool inputs without false success.
-
-### Changed
-
-- Replace handwritten upstream SSE framing with eventsource-stream 0.2.3 and downstream string concatenation with Axum Sse/Event.
-- Add fixed-main differential and Anthropic SDK snapshot acceptance on Linux/Windows CI, first-content barrier tests, and benchmark SSE validation, per-kind latency and adapter-process RSS.
-
-## [Unreleased]
+## [2.2.0] — 2026-10-12
 
 ### Added
 
@@ -50,6 +37,19 @@ The format follows **Keep a Changelog** and this project adheres to **Semantic V
 - Verify real Claude Code streaming with isolated settings, a sanitized per-request probe, a fixed LM Studio text/tool matrix, and event arrival timing.
 - Distinguish terminal Anthropic assistant-prefill capability mismatches from adapter streaming failures without persisting the prefill content.
 - Reject unsupported terminal assistant prefills before upstream I/O instead of silently deleting content; preserve them exactly in explicitly selected extension or native modes.
+
+## [2.0.1] — 2026-09-21
+
+### Fixed
+
+- Restore main's streaming/non-streaming thinking and client usage shapes, including reasoning-only responses and reasoning-field fallback.
+- Stream independent tool calls immediately when their declared names are unambiguous; preserve fragmented names, tool/text indices and text after tools.
+- Close each block once, retain final usage, distinguish explicit completion from truncated EOF, and reject damaged tool inputs without false success.
+
+### Changed
+
+- Replace handwritten upstream SSE framing with eventsource-stream 0.2.3 and downstream string concatenation with Axum Sse/Event.
+- Add fixed-main differential and Anthropic SDK snapshot acceptance on Linux/Windows CI, first-content barrier tests, and benchmark SSE validation, per-kind latency and adapter-process RSS.
 
 ## [2.0.0] — 2026-09-20
 

@@ -66,7 +66,7 @@ impl Arguments {
                         .map_err(|_| format!("Invalid port: {value}"))?;
                 }
                 "--version" | "-V" => {
-                    println!("claude-adapter-native 2.0.0");
+                    println!("claude-adapter-native {}", env!("CARGO_PKG_VERSION"));
                     std::process::exit(0);
                 }
                 other => return Err(format!("Unknown argument: {other}")),

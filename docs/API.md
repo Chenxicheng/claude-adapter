@@ -1,6 +1,6 @@
 # HTTP API Reference
 
-Claude Adapter 2.0 is a CLI product. It starts a native Rust proxy and does not export Node.js server or converter APIs.
+Claude Adapter is a CLI product. It starts a native Rust proxy and does not export Node.js server or converter APIs.
 
 ## `POST /v1/messages`
 

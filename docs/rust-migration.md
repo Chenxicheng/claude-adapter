@@ -43,8 +43,8 @@ A deterministic local upstream and shared fixtures compare Node 1.2 behavior wit
 
 `bench/baseline-2026-09-19.json` preserves the pre-cutover Node/Rust comparison. The current harness also runs tools, reasoning, upstream-error, slow-reader, and downstream-disconnect preflights before collecting text and SSE performance samples; `BENCH_UPSTREAM_DELAY_MS` controls deterministic upstream delay.
 
-The first release embeds Linux glibc x64 and Windows x64 binaries. macOS, Linux arm64, musl, Windows arm64, Responses API, N-API, image proxying, and automatic model switching are out of scope.
+The release embeds Linux glibc x64 and Windows x64 binaries. macOS, Linux arm64, musl, Windows arm64, Responses API, N-API, and automatic model switching are out of scope. User images are converted to Chat `image_url` parts when the upstream model supports image input.
 
 Real LM Studio/Qwen acceptance runs a fixed six-case matrix: minimal streamed text without tools, the exact streamed Claude Code text request, the same request non-streaming, a minimal Read tool with `tool_choice=auto`, the same tool with a named choice, and the complete Claude Read/tool-result/final-text loop. The diagnostic run explicitly uses `assistantPrefill: native` so it measures the upstream's behavior without changing LM Studio model configuration. Text and Read require real output events and reject `empty_end_turn`, while protocol fixtures separately prove that legal empty completions remain consumable and that the default unsupported mode performs no upstream I/O.
 
-Release CI builds and tests both targets, bundles their binaries and all production JavaScript dependencies into one `claude-adapter-2.0.0.tgz`, verifies an empty-cache `npm install --offline`, and creates the GitHub release without publishing to npm automatically.
+Release CI builds and tests both targets, bundles their binaries and all production JavaScript dependencies into one `claude-adapter-2.2.0.tgz`, verifies an empty-cache `npm install --offline`, and creates the GitHub release without publishing to npm automatically.

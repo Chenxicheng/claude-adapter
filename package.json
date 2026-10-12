@@ -1,6 +1,6 @@
 {
   "name": "claude-adapter",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Proxy to convert Anthropic API requests to OpenAI format for Claude Code",
   "bin": {
     "claude-adapter": "dist/cli.js"
@@ -47,12 +47,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/shantoislamdev/claude-adapter.git"
+    "url": "git+https://github.com/Chenxicheng/claude-adapter.git"
   },
   "bugs": {
-    "url": "https://github.com/shantoislamdev/claude-adapter/issues"
+    "url": "https://github.com/Chenxicheng/claude-adapter/issues"
   },
-  "homepage": "https://claude-adapter.pages.dev/",
+  "homepage": "https://github.com/Chenxicheng/claude-adapter",
   "dependencies": {
     "chalk": "^4.1.2",
     "commander": "^12.1.0",

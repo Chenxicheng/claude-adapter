@@ -67,19 +67,21 @@ When Claude Code initiates a request, **Claude Adapter** intercepts it, transfor
 
 ### Installation
 
-To install the adapter globally on your system, execute the following command:
+Download `claude-adapter-2.2.0.tgz` from this repository's [v2.2.0 release](https://github.com/Chenxicheng/claude-adapter/releases/tag/v2.2.0), then install it globally:
 
 ```bash
-npm install -g claude-adapter
+npm install -g ./claude-adapter-2.2.0.tgz
 ```
 
-For an offline machine, transfer the single release tarball and install it without registry access:
+For an offline machine, transfer the same tarball and install it without registry access:
 
 ```bash
-npm install -g --offline ./claude-adapter-2.0.0.tgz
+npm install -g --offline ./claude-adapter-2.2.0.tgz
 ```
 
-The package selects its embedded binary at runtime. Version 2.0 supports Linux glibc x64 and Windows x64; macOS, Linux arm64, musl Linux, and Windows arm64 are not included.
+The npm registry's `claude-adapter` package points to a different repository; this GitHub release does not publish to npm.
+
+The package selects its embedded binary at runtime. This release supports Linux glibc x64 and Windows x64; macOS, Linux arm64, musl Linux, and Windows arm64 are not included.
 
 ### Quick Start
 
