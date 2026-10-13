@@ -67,10 +67,28 @@ fn validate_messages(messages: &[Value], errors: &mut Vec<String>) {
             continue;
         };
         let role = message.get("role").and_then(Value::as_str);
-        if !matches!(role, Some("user" | "assistant")) {
+        if !matches!(role, Some("user" | "assistant" | "system")) {
             errors.push(format!(
-                "messages[{message_index}].role: role must be user or assistant"
+                "messages[{message_index}].role: role must be user, assistant, or system"
             ));
+        }
+        if role == Some("system") {
+            if message
+                .get("clear_at")
+                .is_some_and(|value| !value.is_null() && value != "never")
+            {
+                errors.push(format!(
+                    "messages[{message_index}].clear_at: not supported by Chat Completions conversion"
+                ));
+            }
+            if message
+                .get("output_config")
+                .is_some_and(|value| !value.is_null())
+            {
+                errors.push(format!(
+                    "messages[{message_index}].output_config: not supported by Chat Completions conversion"
+                ));
+            }
         }
         match message.get("content") {
             None | Some(Value::Null) => {}
@@ -118,11 +136,14 @@ fn validate_content_block(
         (true, "image") => validate_image_block(block, field, errors),
         (_, "image") => errors.push(format!("{field}: image blocks require a user message")),
         (true, "tool_result") => validate_tool_result(block, field, errors),
-        (false, "tool_use") => validate_tool_use(block, field, errors),
-        (false, "thinking") if block.get("thinking").and_then(Value::as_str).is_none() => {
+        (false, "tool_use") if role == Some("assistant") => validate_tool_use(block, field, errors),
+        (false, "thinking")
+            if role == Some("assistant")
+                && block.get("thinking").and_then(Value::as_str).is_none() =>
+        {
             errors.push(format!("{field}.thinking: thinking must be a string"));
         }
-        (false, "thinking" | "redacted_thinking") => {}
+        (false, "thinking" | "redacted_thinking") if role == Some("assistant") => {}
         _ => errors.push(format!("{field}.type: unsupported content block type")),
     }
 }
@@ -517,17 +538,20 @@ fn convert_message(
         return Ok(Vec::new());
     };
     if let Some(content) = content.as_str() {
-        let role = if role == "user" { "user" } else { "assistant" };
         return Ok(vec![json!({"role": role, "content": content})]);
     }
 
     let blocks = content.as_array().expect("validated content array");
     match role {
         "user" => convert_user_blocks(blocks, message_index, ids),
-        _ => {
+        "system" => Ok(vec![
+            json!({"role": "system", "content": system_content(content)}),
+        ]),
+        "assistant" => {
             let converted = convert_assistant_blocks(blocks, ids, preserve_reasoning)?;
             Ok(vec![converted])
         }
+        _ => unreachable!("validated message role"),
     }
 }
 

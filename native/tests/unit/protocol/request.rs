@@ -296,7 +296,11 @@ fn rejects_unsupported_roles_and_generation_fields() {
     });
     let error = convert_request(&body, "https://api.openai.com/v1").unwrap_err();
     assert_eq!(error.status, StatusCode::BAD_REQUEST);
-    assert!(error.message.contains("role must be user or assistant"));
+    assert!(
+        error
+            .message
+            .contains("messages[2].role: role must be user, assistant, or system")
+    );
     for field in ["top_k", "output_config.format"] {
         let mut body = json!({
             "model": "gpt-4", "max_tokens": 10,
@@ -313,6 +317,43 @@ fn rejects_unsupported_roles_and_generation_fields() {
             "{field}"
         );
     }
+}
+
+#[test]
+fn rejects_unmappable_mid_conversation_system_fields_and_blocks() {
+    for system in [
+        json!({"role": "system", "content": "instruction", "clear_at": "next_user_message"}),
+        json!({"role": "system", "content": "instruction", "output_config": {"effort": "high"}}),
+        json!({"role": "system", "content": [{"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}}]}),
+    ] {
+        let body = json!({
+            "model": "gpt-4", "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hello"}, system]
+        });
+        let error = convert_request(&body, "https://api.openai.com/v1").unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("messages[1]"));
+    }
+}
+
+#[test]
+fn joins_mid_conversation_system_text_blocks() {
+    let body = json!({
+        "model": "gpt-4", "max_tokens": 10,
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "system", "content": [
+                {"type": "text", "text": "First"},
+                {"type": "text", "text": "Second"}
+            ]},
+            {"role": "user", "content": "continue"}
+        ]
+    });
+    let converted = convert_request(&body, "https://api.openai.com/v1").unwrap();
+    assert_eq!(
+        converted["messages"][1],
+        json!({"role": "system", "content": "First\nSecond"})
+    );
 }
 
 #[test]

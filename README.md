@@ -170,7 +170,7 @@ Version 2 is a CLI-only product. The previous JavaScript `createServer` and conv
 | Feature Capability    | Support Status | Implementation Notes                                     |
 | --------------------- | :------------: | -------------------------------------------------------- |
 | Text Generation       |       ✅       | Full fidelity                                            |
-| System Prompts        |       ✅       | Mid-conversation instructions normalize to one system    |
+| System Prompts        |       ✅       | Mid-conversation system messages keep their position     |
 | Real-time Streaming   |       ✅       | SSE event translation                                    |
 | Tool/Function Calling |       ✅       | Bidirectional mapping                                    |
 | Native Tool Support   |       ✅       | Upstream model must support native tool/function calling |

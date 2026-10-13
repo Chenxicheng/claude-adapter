@@ -11,7 +11,7 @@ Accepts an Anthropic Messages request and forwards it to the configured OpenAI-c
   model: string;
   max_tokens: number;
   messages: Array<{
-    role: 'user' | 'assistant';
+    role: 'user' | 'assistant' | 'system';
     content: string | ContentBlock[];
   }>;
   system?: string | ContentBlock[];
@@ -39,7 +39,7 @@ Accepts an Anthropic Messages request and forwards it to the configured OpenAI-c
 
 Every response includes `x-request-id`.
 
-Request conversion retains the established text/tool Chat Completions behavior where it matches the documented contracts. Only `user` and `assistant` input roles are accepted; unsupported result-bearing content blocks return `400` rather than becoming assistant history or disappearing. Historical `thinking` and `redacted_thinking` blocks keep the existing behavior described below. Messages with missing or null content are skipped; historical assistant text, including short replies and JSON-start text, is preserved. GPT-5 and OpenAI o-series models use `max_completion_tokens`; other models use `max_tokens`, with the existing Azure minimum adjustment.
+Request conversion retains the established text/tool Chat Completions behavior where it matches the documented contracts. Input `user`, `assistant`, and text-only `system` messages retain their roles and order; top-level `system` is prepended. Unsupported roles, system-message `clear_at` values other than `never`, per-message `output_config`, and unsupported result-bearing content blocks return `400` instead of changing semantics or disappearing. Historical `thinking` and `redacted_thinking` blocks keep the existing behavior described below. Messages with missing or null content are skipped; historical assistant text, including short replies and JSON-start text, is preserved. GPT-5 and OpenAI o-series models use `max_completion_tokens`; other models use `max_tokens`, with the existing Azure minimum adjustment.
 
 Upstream requests explicitly send `Accept: application/json`, `Content-Type: application/json`, bearer authorization, `stream: true | false`, and an OpenAI JavaScript SDK-compatible user agent.
 
